@@ -9,6 +9,7 @@ extend-ignore-re = [
 DNE = "DNE"
 arange = "arange"
 nd = "nd"
+Pn = "Pn"
 terrestial = "terrestial"
 abd = "abd"
 afe = "afe"
