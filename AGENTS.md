@@ -1,4 +1,6 @@
-# AGENTS.md
+# Lance Repository Guide (for AI agents)
+
+This file is shared between `AGENTS.md` and `CLAUDE.md` (symlink) and gives AI coding assistants — including Claude Code (claude.ai/code) — the context needed to work productively in this repository.
 
 Lance is a modern columnar data format optimized for ML workflows and datasets, providing high-performance random access, vector search, zero-copy automatic versioning, and ecosystem integrations. The vision is to become the de facto standard columnar data format for machine learning and large language models.
 
@@ -27,6 +29,8 @@ Rust workspace with Python and Java bindings:
 - `rust/lance-datafusion/` - DataFusion integration (built separately)
 - `python/` - Python bindings (PyO3/maturin)
 - `java/` - Java bindings (JNI)
+- `benchmarks/` - Cross-version performance benchmarks (not a crate)
+- `memtest/` - Memory-pressure regression harness (not a crate)
 
 Key technical traits: async-first (tokio), Arrow-native, versioned writes with manifest tracking, custom ML-optimized encodings, unified object store interface (local/S3/Azure/GCS).
 
@@ -36,12 +40,51 @@ Key technical traits: async-first (tokio), Arrow-native, versioned writes with m
 - Treat every file format marked unstable as disposable. It may change freely; do not add compatibility code, migrations, fallbacks, or tests for files written by earlier unstable revisions.
 - Evaluate compatibility against the latest released stable version while continuing to honor all stable format contracts. Changes that exist only on the current branch or `main` are not compatibility constraints; do not compromise a cleaner or more complete design to preserve those intermediate states.
 
+## Big Picture Architecture
+
+The flat crate list above hides the layering. From bottom to top:
+
+```
+Foundational:   lance-core,  lance-io,       lance-arrow
+Format/encode:  lance-file,  lance-encoding, lance-table
+Index/math:     lance-index, lance-linalg
+Execution:      lance-datafusion,  lance (main crate)
+Bindings:       python/src (PyO3), java/lance-jni (JNI)
+```
+
+`lance-core` sits beneath nearly everything; `lance-table` defines the on-disk format structs (`Manifest`, `Fragment`, `DataFile`, `Transaction`) that `lance` operates on; `lance-index` plugs in via references inside `Manifest`.
+
+### Load-bearing abstractions
+
+A future contributor will meet these quickly; knowing where they live saves a search:
+
+| Concept | Lives in | Role |
+|---|---|---|
+| `Dataset` | `rust/lance/src/dataset.rs` | Top-level API; owns object store, commit handler, version state |
+| `Fragment` | `rust/lance-table/src/format/fragment.rs` + `rust/lance/src/dataset/fragment.rs` | Immutable data slice; groups `DataFile`s; carries a `DeletionVector` |
+| `Manifest` | `rust/lance-table/src/format/manifest.rs` | Versioned snapshot: fragments + indices + schema + feature flags |
+| `Transaction` | `rust/lance/src/dataset/transaction.rs` | ACID change set; `read_version + Operation → next Manifest` |
+| `Scanner` | `rust/lance/src/dataset/scanner.rs` | Query builder/executor; returns record-batch streams |
+| `Index` | `rust/lance-index/` | IVF / HNSW / PQ / BTree / FTS; referenced from `Manifest`, stored under `_indices/` |
+
+### Binding entry points
+
+- **Python (PyO3):** `python/src/lib.rs` — single `#[pymodule]`; type wrappers in `python/src/{dataset,scanner,transaction,fragment}.rs`.
+- **Java (JNI):** `java/lance-jni/src/lib.rs` — per-function JNI exports; wrappers in `blocking_dataset.rs`, `async_scanner.rs`, etc.
+
+These are thin translation layers — validation and logic belong in the Rust core (reinforced under *Cross-Language Bindings* below).
+
+### Write/commit flow
+
+`InsertBuilder` (`rust/lance/src/dataset/write/insert.rs`) → `FragmentCreateBuilder` serializes batches via `lance-file` → `Transaction` constructed with `Operation::Add(fragments)` → new `Manifest` built → `CommitHandler` (in `rust/lance/src/io/commit/`) atomically writes `_versions/v<N>.manifest` → indices built async into `_indices/` via `lance-index`.
+
 ## Development Commands
 
 ### Rust
 
 * Check: `cargo check --workspace --tests --benches`
-* Test: `cargo test --workspace` or `cargo test -p <package> <test_name>`
+* Test (all): `cargo test --workspace`
+* Test (single): `cargo test -p <crate> <filter>` — filter is a substring of the full test path, e.g. `cargo test -p lance test_write_progress_callback`
 * Lint: `cargo clippy --all --tests --benches -- -D warnings`
 * Format: `cargo fmt --all`
 * Coverage: `cargo +nightly llvm-cov -q -p <crate> --branch`
@@ -63,10 +106,14 @@ See [python/AGENTS.md](python/AGENTS.md) and [java/AGENTS.md](java/AGENTS.md).
 
 ### Integration Testing
 
+The repo-root `docker-compose.yml` stands up a **localstack** container that emulates S3, DynamoDB, and KMS on `localhost:4566` — this is what `test_s3_ddb.py` and other object-store tests expect.
+
 ```bash
-cd test_data && docker compose up -d
+docker compose up -d
 AWS_DEFAULT_REGION=us-east-1 pytest --run-integration python/tests/test_s3_ddb.py
 ```
+
+Unrelated to this harness: the `test_data/` directory holds checked-in datasets from older Lance versions for backwards-compatibility tests (see *Testing Standards* below).
 
 ## Coding Standards
 
