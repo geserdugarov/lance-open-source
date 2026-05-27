@@ -11,7 +11,7 @@ implementing new distance kernels, or diagnosing recall / latency issues.
 
 ## 1. The index-type taxonomy
 
-Authoritative enum: `IndexType` in `rust/lance/src/lib.rs` (lines ~104–138).
+Authoritative enum: `IndexType` in `rust/lance-index/src/lib.rs` (lines ~104–138).
 
 ```
                         VECTOR INDEX TYPES
@@ -85,7 +85,7 @@ table above are the ones the enum recognizes.
    Every vector is assigned to the partition of its NEAREST centroid.
 ```
 
-**Struct:** `IvfModel` — `rust/lance-index/src/vector/ivf/storage.rs` (≈ line 25)
+**Struct:** `IvfModel` — `rust/lance-index/src/vector/ivf/storage.rs` (≈ line 27)
 
 ```
 pub struct IvfModel {
@@ -100,11 +100,15 @@ pub struct IvfModel {
 
 | Field | Default | Meaning |
 |---|---:|---|
-| `num_partitions` | *derived* | Explicit `k`. If not set, uses `target_partition_size` to pick one. |
-| `target_partition_size` | depends on variant | Target rows/partition (IVF_FLAT≈4096, IVF_SQ/PQ≈8192, IVF_HNSW_*≈1 M) |
+| `num_partitions` | `None` *(deprecated)* | Explicit `k`. If unset, derived from `target_partition_size`. |
+| `target_partition_size` | `None` *(per-variant default)* | Target rows/partition (IVF_FLAT≈4096, IVF_SQ/PQ≈8192, IVF_HNSW_*≈1 M) |
 | `max_iters` | 50 | k-means iterations |
+| `centroids` / `retrain` | `None` / `false` | Bring your own IVF centroids; opt into retraining from them. |
 | `sample_rate` | 256 | Rows sampled **per centroid** for training (so total sample ≈ `256 × k`) |
-| `distance_type` | `L2` | `L2`, `Cosine`, or `Dot` |
+
+Distance type is **not** an `IvfBuildParams` field; it is plumbed through the
+higher-level index-creation API (the `DistanceType` carried by the create-index
+request and by the chosen quantizer).
 
 **k-means core** — `rust/lance-index/src/vector/kmeans.rs` (with linalg kernels
 from `rust/lance-linalg/`). Supports `DistanceType::{L2, Cosine, Dot}`
@@ -154,12 +158,14 @@ quantizing M non-overlapping sub-vectors against per-sub-vector codebooks of
 
 ```
 pub struct ProductQuantizer {
-    pub num_sub_vectors: usize,            // M
-    pub num_bits:        u32,              // typically 8
+    pub num_sub_vectors: usize,               // M
+    pub num_bits:        u32,                 // typically 8
+    pub dimension:       usize,               // D — vector dimensionality
     pub codebook:        FixedSizeListArray,  // flattened (M × 256 × D/M) f32
     pub distance_type:   DistanceType,
-    // L2 fast-path: pre-transposed centroids for batched FMA
-    pub l2_targets:      Option<Vec<L2Prepared>>,
+    // L2 fast-path: pre-transposed centroids for batched FMA (crate-private).
+    // Populated only for f32 codebooks under L2 (Cosine is converted to L2).
+    l2_targets:          Option<Vec<L2Prepared>>,
 }
 ```
 
@@ -214,11 +220,14 @@ cross-dimensional interaction.
 
 ```
 pub struct ScalarQuantizer {
-    pub metadata: ScalarQuantizationMetadata {
-        pub num_bits: u16,         // 8 default (4 also present)
-        pub dim:      usize,
-        pub bounds:   Range<f64>,  // global or per-dim
-    },
+    metadata: ScalarQuantizationMetadata,    // module-private field
+}
+
+// rust/lance-index/src/vector/sq/storage.rs
+pub struct ScalarQuantizationMetadata {
+    pub dim:      usize,
+    pub num_bits: u16,         // 8 default (4 also present)
+    pub bounds:   Range<f64>,  // populated lazily from the training sample
 }
 ```
 
@@ -473,13 +482,13 @@ the `DataFile`.
 
 | Concern | Path |
 |---|---|
-| Top-level `IndexType` enum | `rust/lance/src/lib.rs` |
+| Top-level `IndexType` enum | `rust/lance-index/src/lib.rs` |
 | Generic builder | `rust/lance/src/index/vector/builder.rs` |
 | Logical vector index | `rust/lance/src/index/vector.rs` |
 | IVF model | `rust/lance-index/src/vector/ivf/storage.rs` |
 | IVF build params | `rust/lance-index/src/vector/ivf/builder.rs` |
-| PQ | `rust/lance-index/src/vector/pq.rs` (+ `pq/distance.rs`, `pq/storage.rs`) |
-| SQ | `rust/lance-index/src/vector/sq.rs` |
+| PQ | `rust/lance-index/src/vector/pq.rs` (+ `pq/builder.rs`, `pq/distance.rs`, `pq/storage.rs`) |
+| SQ | `rust/lance-index/src/vector/sq.rs` (+ `sq/builder.rs`, `sq/storage.rs`) |
 | HNSW builder | `rust/lance-index/src/vector/hnsw/builder.rs` |
 | HNSW index integration | `rust/lance-index/src/vector/hnsw/index.rs` |
 | RaBitQ / BQ | `rust/lance-index/src/vector/bq/builder.rs` (+ `bq/rotation.rs`) |
