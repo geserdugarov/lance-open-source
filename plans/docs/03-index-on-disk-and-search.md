@@ -47,6 +47,9 @@ pub struct IndexMetadata {
     pub fragment_bitmap: Option<RoaringBitmap>,   // fragments covered
     pub index_details: Option<Arc<prost_types::Any>>,  // type-specific proto
     pub index_version: i32,                       // format version of the index itself
+    pub created_at: Option<DateTime<Utc>>,        // when the index was built (None for older indices)
+    pub base_id: Option<u32>,                     // optional key into Manifest::base_paths
+                                                  // (used when index files live outside the dataset root)
     pub files: Option<Vec<IndexFile>>,            // physical segments + sizes
 }
 ```
@@ -66,8 +69,11 @@ Two key invariants:
 
 Directory-resolution helpers:
 
-- `Dataset::indices_dir()` → `<dataset_root>/_indices/` (`rust/lance/src/dataset.rs:1762`)
-- `Dataset::indice_files_dir(idx)` → `<dataset_root>/_indices/<uuid>/` (`rust/lance/src/dataset.rs:1942`)
+- `Dataset::indices_dir()` → `<dataset_root>/_indices/` (`rust/lance/src/dataset.rs:1830`)
+- `Dataset::indice_files_dir(idx)` → the indices **base** directory for that index
+  (typically `<dataset_root>/_indices/`, but redirected via `IndexMetadata::base_id`
+  when the index lives outside the dataset root). Callers append `<index.uuid>/`
+  themselves to reach the segment files. (`rust/lance/src/dataset.rs:2043`)
 
 ---
 
@@ -316,9 +322,10 @@ Example query: `WHERE category = 'cats'` combined with vector search.
   considered during partition scanning. More accurate but costs a filter
   pass up front.
 
-The filter plan is represented in `Scanner::filter_plan: FilterPlan`
-(`rust/lance/src/dataset/scanner.rs` ≈ line 273). Push-down wiring happens
-in the plan builder (`vector_search` + KNN execution nodes).
+The filter is represented as `Scanner::filter: LanceFilter`
+(`rust/lance/src/dataset/scanner.rs` ≈ line 739). Push-down wiring happens
+in the plan builder (`vector_search` + KNN execution nodes), which lowers
+`LanceFilter` into an `ExprFilterPlan` before execution.
 
 ---
 
