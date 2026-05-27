@@ -39,11 +39,11 @@ Constants authoritatively defined in the source:
 
 | Dir | Constant | Location |
 |---|---|---|
-| `data/` | `DATA_DIR` | `rust/lance/src/dataset.rs:142` |
-| `_versions/` | `VERSIONS_DIR` | `rust/lance-table/src/io/commit.rs:69` |
-| `_indices/` | `INDICES_DIR` | `rust/lance/src/dataset.rs:141` |
+| `data/` | `DATA_DIR` | `rust/lance/src/dataset.rs:145` |
+| `_versions/` | `VERSIONS_DIR` | `rust/lance-table/src/io/commit.rs:70` |
+| `_indices/` | `INDICES_DIR` | `rust/lance/src/dataset.rs:144` |
 | `_deletions/` | `DELETIONS_DIR` | `rust/lance-table/src/io/deletion.rs:25` |
-| `_transactions/` | `TRANSACTIONS_DIR` | `rust/lance/src/dataset.rs:143` |
+| `_transactions/` | `TRANSACTIONS_DIR` | `rust/lance/src/dataset.rs:146` |
 
 **Key property:** data files are **append-only and immutable**. An `UPDATE` or
 `DELETE` does not rewrite data files — it writes new fragments or adds a

@@ -99,9 +99,16 @@ then global buffers, then two offset tables, and finally a 16-byte footer.
   | `(major, minor)` | Version enum |
   |---|---|
   | `(0, 3)` or `(2, 0)` | `LanceFileVersion::V2_0` |
-  | `(2, 1)` | `V2_1` |
+  | `(2, 1)` | `V2_1` *(current default / `Stable`)* |
   | `(2, 2)` | `V2_2` |
-  | `(2, 3)` | `V2_3` *(current stable)* |
+  | `(2, 3)` | `V2_3` *(resolves from `Next`; marked unstable)* |
+
+  Stability in `LanceFileVersion` (`rust/lance-encoding/src/version.rs`) is
+  decided by `is_unstable()`, which returns `self >= Next` — so `Next` itself
+  and every version above it (today `V2_3`) are unstable, while everything
+  below `Next` (`Legacy`, `V2_0`, `V2_1`, `Stable`, `V2_2`) is stable. `Stable`
+  resolves to the enum default (`V2_1`); `Next` resolves to `V2_3`. New
+  datasets are written at the `Stable` version.
 
 - `V2_1+` uses the **structural encoding** machinery — this is the path a
   vector column takes today. Older files (`V2_0`) use a legacy layout under
