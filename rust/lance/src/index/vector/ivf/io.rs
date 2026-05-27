@@ -280,7 +280,10 @@ pub(super) async fn write_hnsw_quantization_index_partitions(
     let object_store = ObjectStore::local();
     let mut part_files = Vec::with_capacity(ivf.num_partitions());
     let mut aux_part_files = Vec::with_capacity(ivf.num_partitions());
-    let tmp_part_dir = Path::from_filesystem_path(TempStdDir::default())?;
+    // Bind the guard to keep the scratch directory alive for the whole function;
+    // dropping it earlier would delete the partition files before they are read back.
+    let tmp_part_dir_guard = TempStdDir::default();
+    let tmp_part_dir = Path::from_filesystem_path(&tmp_part_dir_guard)?;
     let mut tasks = Vec::with_capacity(ivf.num_partitions());
     let sem = Arc::new(Semaphore::new(*HNSW_PARTITIONS_BUILD_PARALLEL));
     for part_id in 0..ivf.num_partitions() {
