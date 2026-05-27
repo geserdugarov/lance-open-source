@@ -125,3 +125,11 @@ docs/src/community/project-specific/namespace-impls.md
 docs/src/community/project-specific/ray.md
 docs/src/community/project-specific/spark.md
 docs/src/community/project-specific/trino.md
+
+# agents related
+.codex
+.codex-*
+.claude/*
+!.claude/skills/
+.develop-review-loop/
+
