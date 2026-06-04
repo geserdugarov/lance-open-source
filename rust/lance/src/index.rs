@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::FutureExt;
 use itertools::Itertools;
-use lance_core::cache::CacheKey;
+use lance_core::cache::{CacheKey, LanceCache};
 use lance_core::datatypes::Field;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_core::utils::address::RowAddress;
@@ -381,6 +381,49 @@ impl CacheKey for MemWalCacheKey<'_> {
 
     fn type_name() -> &'static str {
         "MemWalIndex"
+    }
+}
+
+/// Drop cached entries belonging to each `removed_indices` UUID from the
+/// dataset-level index cache.
+///
+/// Called after a successful `Operation::CreateIndex` commit so subsequent
+/// reads cannot serve a stale `LegacyVectorIndex` / `IvfIndexState` root entry,
+/// or a per-partition entry for an index UUID that no longer exists in the
+/// manifest. Both shapes of the cache key — bare `uuid` and `uuid-fri_uuid`
+/// (used when a fragment-reuse index is in effect) — are cleared so a FRI
+/// added or removed during the index's lifetime can never leave stale state
+/// behind.
+pub(crate) async fn invalidate_removed_index_caches(
+    cache: &LanceCache,
+    removed_indices: &[IndexMetadata],
+    current_fri_uuid: Option<&Uuid>,
+) {
+    for removed in removed_indices {
+        let uuid_str = removed.uuid.to_string();
+
+        // Root entries and partition prefix that were keyed by the bare UUID
+        // (when no fragment-reuse index was active).
+        cache
+            .invalidate_with_key(&LegacyVectorIndexCacheKey::new(&uuid_str, None))
+            .await;
+        cache
+            .invalidate_with_key(&IvfIndexStateCacheKey::new(&uuid_str, None))
+            .await;
+        cache.invalidate_prefix(&format!("{}/", uuid_str)).await;
+
+        // Same set under the `uuid-fri_uuid` namespace if a FRI is in effect.
+        if let Some(fri_uuid) = current_fri_uuid {
+            cache
+                .invalidate_with_key(&LegacyVectorIndexCacheKey::new(&uuid_str, Some(fri_uuid)))
+                .await;
+            cache
+                .invalidate_with_key(&IvfIndexStateCacheKey::new(&uuid_str, Some(fri_uuid)))
+                .await;
+            cache
+                .invalidate_prefix(&format!("{}-{}/", uuid_str, fri_uuid))
+                .await;
+        }
     }
 }
 
@@ -4092,6 +4135,122 @@ mod tests {
         for id in ids.values() {
             assert!(seen.insert(*id), "Duplicate id found: {}", id);
         }
+    }
+
+    #[tokio::test]
+    async fn test_optimize_indices_invalidates_removed_index_cache() {
+        // Build an IVF-PQ index, prewarm it so the IvfIndexState root entry
+        // and per-partition entries land in the dataset's index cache, then
+        // run a retraining optimize_indices that retires the original
+        // segment. Stale cache entries keyed by the old UUID must be gone
+        // after the commit — otherwise a follow-up open could serve a state
+        // that no longer matches anything on disk.
+        let nrows = 256;
+        let dimensions = 16;
+        let column_name = "vector";
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                column_name,
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dimensions,
+                ),
+                false,
+            ),
+        ]));
+
+        let float_arr = generate_random_array(nrows * dimensions as usize);
+        let vectors =
+            arrow_array::FixedSizeListArray::try_new_from_values(float_arr, dimensions).unwrap();
+        let record_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int32Array::from_iter_values(0..nrows as i32)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+
+        let reader =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let mut dataset = Dataset::write(reader, "memory://", None).await.unwrap();
+
+        let params = VectorIndexParams::ivf_pq(2, 8, 2, MetricType::L2, 2);
+        dataset
+            .create_index(&[column_name], IndexType::Vector, None, &params, true)
+            .await
+            .unwrap();
+
+        let indices = dataset.load_indices().await.unwrap();
+        let old_meta = indices
+            .iter()
+            .find(|idx| idx.fields == [dataset.schema().field(column_name).unwrap().id])
+            .expect("vector index should be present");
+        let old_uuid = old_meta.uuid;
+        let old_uuid_str = old_uuid.to_string();
+        let index_name = old_meta.name.clone();
+
+        // Prewarm populates both the IvfIndexState root entry and the
+        // partition entries that live under the `uuid/` sub-prefix.
+        dataset.prewarm_index(&index_name).await.unwrap();
+
+        // Sanity: at least the IvfIndexState root entry should be cached
+        // now. If this ever stops holding the helper would silently pass.
+        assert!(
+            dataset
+                .index_cache
+                .get_with_key(&IvfIndexStateCacheKey::new(&old_uuid_str, None))
+                .await
+                .is_some(),
+            "IvfIndexState entry for the freshly opened index should be cached",
+        );
+
+        // Retraining forces optimize_indices to retire the existing segment
+        // (replaced by a new UUID), which is the path the helper guards.
+        dataset
+            .optimize_indices(&OptimizeOptions::retrain())
+            .await
+            .unwrap();
+
+        let new_indices = dataset.load_indices().await.unwrap();
+        let new_uuid = new_indices
+            .iter()
+            .find(|idx| idx.fields == old_meta.fields)
+            .expect("vector index should be present after optimize")
+            .uuid;
+        assert_ne!(new_uuid, old_uuid, "retrain must produce a new UUID");
+
+        // Root entries keyed by the old UUID must be gone.
+        assert!(
+            dataset
+                .index_cache
+                .get_with_key(&IvfIndexStateCacheKey::new(&old_uuid_str, None))
+                .await
+                .is_none(),
+            "stale IvfIndexState root entry must be invalidated",
+        );
+        assert!(
+            dataset
+                .index_cache
+                .get_with_key(&LegacyVectorIndexCacheKey::new(&old_uuid_str, None))
+                .await
+                .is_none(),
+            "stale LegacyVectorIndex root entry must be invalidated",
+        );
+
+        // The partition sub-cache prefix must have no surviving entries:
+        // re-invalidating it should be a no-op.
+        let size_before = dataset.index_cache.size().await;
+        dataset
+            .index_cache
+            .invalidate_prefix(&format!("{}/", old_uuid_str))
+            .await;
+        let size_after = dataset.index_cache.size().await;
+        assert_eq!(
+            size_before, size_after,
+            "no cache entries should remain under the removed index's UUID prefix",
+        );
     }
 
     #[tokio::test]
