@@ -113,6 +113,13 @@ pub trait CacheBackend: Send + Sync + std::fmt::Debug {
     /// Remove all entries whose prefix starts with the given string.
     async fn invalidate_prefix(&self, prefix: &str);
 
+    /// Remove the single entry identified by `key`, if present.
+    ///
+    /// Sibling entries — those sharing the same `prefix` but a different
+    /// `key` or `type_name` — must not be removed. This is the exact-key
+    /// counterpart to [`invalidate_prefix`](Self::invalidate_prefix).
+    async fn invalidate_entry(&self, key: &InternalCacheKey);
+
     /// Remove all entries.
     async fn clear(&self);
 
