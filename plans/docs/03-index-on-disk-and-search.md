@@ -365,6 +365,13 @@ Properties:
   land in memory up front.
 - Eviction is session-driven; persistent sessions keep hot indexes
   essentially forever.
+- After a successful `Operation::CreateIndex` commit, the cache entries
+  keyed by each removed index UUID — root `IvfIndexState` /
+  `LegacyVectorIndex` entries plus the per-partition sub-prefix
+  (`uuid/` and `uuid-fri_uuid/`) — are dropped via
+  `invalidate_removed_index_caches`. Without this, a long-lived session
+  could keep serving queries against an index segment that no longer
+  exists in the manifest.
 
 ---
 
