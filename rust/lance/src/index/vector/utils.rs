@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arrow::array::ArrayData;
 use arrow::datatypes::DataType;
@@ -486,18 +487,31 @@ async fn sample_training_data(
             );
             return vector_column_to_fsl(&batch, column);
         }
+        let still_needed = Arc::new(AtomicUsize::new(sample_size_hint));
         let scan = sample_training_data_scan_from_fragments(
             dataset,
             column,
             sample_size_hint,
             num_rows,
             fragment_ids,
+            still_needed.clone(),
         )?;
         return match vector_field.data_type() {
             DataType::FixedSizeList(_, _) => {
-                sample_nullable_fsl(column, sample_size_hint, byte_width, vector_field, scan).await
+                sample_nullable_fsl(
+                    column,
+                    sample_size_hint,
+                    byte_width,
+                    vector_field,
+                    scan,
+                    still_needed,
+                )
+                .await
             }
-            _ => sample_nullable_fallback(column, sample_size_hint, is_nullable, scan).await,
+            _ => {
+                sample_nullable_fallback(column, sample_size_hint, is_nullable, scan, still_needed)
+                    .await
+            }
         };
     }
 
@@ -514,14 +528,25 @@ async fn sample_training_data(
             .await
         }
         DataType::FixedSizeList(_, _) => {
+            let still_needed = Arc::new(AtomicUsize::new(sample_size_hint));
             let scan =
                 sample_training_data_scan(dataset, column, sample_size_hint, num_rows, byte_width)?;
-            sample_nullable_fsl(column, sample_size_hint, byte_width, vector_field, scan).await
+            sample_nullable_fsl(
+                column,
+                sample_size_hint,
+                byte_width,
+                vector_field,
+                scan,
+                still_needed,
+            )
+            .await
         }
         _ => {
+            let still_needed = Arc::new(AtomicUsize::new(sample_size_hint));
             let scan =
                 sample_training_data_scan(dataset, column, sample_size_hint, num_rows, byte_width)?;
-            sample_nullable_fallback(column, sample_size_hint, is_nullable, scan).await
+            sample_nullable_fallback(column, sample_size_hint, is_nullable, scan, still_needed)
+                .await
         }
     }
 }
@@ -543,6 +568,82 @@ fn sample_training_data_scan(
     ))
 }
 
+/// Absolute byte budget on the unseen-index `Vec<u64>` used by the dense
+/// "allocate-then-shuffle" sampling branch. Above this budget the producer
+/// falls back to reservoir sampling so per-round memory stays bounded even
+/// when fragments hold tens of millions of rows.
+const DENSE_PATH_INDEX_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+
+/// Draw `target` distinct row offsets uniformly at random from
+/// `0..num_rows` excluding `seen_offsets`, and record them as seen.
+///
+/// Three strategies, picked by the geometry of the request so that each
+/// round is bounded in both CPU and memory:
+/// - **Rejection sampling** when the unseen pool is much larger than the
+///   request (`remaining > 4 × target`) — expected O(target) draws.
+/// - **Dense allocate-then-shuffle** when the unseen pool is comparable to
+///   the request *and* the `remaining × 8` Vec fits within
+///   `dense_budget_bytes` — one O(num_rows) scan plus an O(remaining)
+///   shuffle.
+/// - **Reservoir sampling (Algorithm R)** otherwise — one O(num_rows)
+///   scan that keeps a uniformly random `target`-subset of the unseen
+///   indices in only `target` slots of memory. This branch is what keeps
+///   the producer responsive when `target` is close to `remaining` on a
+///   large fragment, where rejection sampling would degrade to
+///   O(num_rows × log num_rows) draws.
+fn sample_unseen_indices(
+    rng: &mut SmallRng,
+    num_rows: usize,
+    seen_offsets: &mut HashSet<u64>,
+    target: usize,
+    dense_budget_bytes: usize,
+) -> Vec<u64> {
+    let remaining = num_rows.saturating_sub(seen_offsets.len());
+    let target = target.min(remaining);
+    if target == 0 {
+        return Vec::new();
+    }
+    if remaining > target.saturating_mul(4) {
+        let mut sampled = Vec::with_capacity(target);
+        while sampled.len() < target {
+            let index = rng.random_range(0..num_rows as u64);
+            if seen_offsets.insert(index) {
+                sampled.push(index);
+            }
+        }
+        return sampled;
+    }
+    let dense_fits = remaining.saturating_mul(std::mem::size_of::<u64>()) <= dense_budget_bytes;
+    if dense_fits {
+        let mut unseen_indices = (0..num_rows as u64)
+            .filter(|index| !seen_offsets.contains(index))
+            .collect::<Vec<_>>();
+        unseen_indices.shuffle(rng);
+        unseen_indices.truncate(target);
+        seen_offsets.extend(unseen_indices.iter().copied());
+        return unseen_indices;
+    }
+    // Reservoir sampling (Algorithm R, Vitter 1985).
+    let mut reservoir: Vec<u64> = Vec::with_capacity(target);
+    let mut position: usize = 0;
+    for index in 0..num_rows as u64 {
+        if seen_offsets.contains(&index) {
+            continue;
+        }
+        if position < target {
+            reservoir.push(index);
+        } else {
+            let j = rng.random_range(0..=position);
+            if j < target {
+                reservoir[j] = index;
+            }
+        }
+        position += 1;
+    }
+    seen_offsets.extend(reservoir.iter().copied());
+    reservoir
+}
+
 /// Build a batch stream over fragment-limited random samples.
 ///
 /// This is the only extra sampling helper we keep for ENT-1099. The existing
@@ -556,6 +657,7 @@ fn sample_training_data_scan_from_fragments(
     sample_size_hint: usize,
     num_rows: usize,
     fragment_ids: &[u32],
+    still_needed: Arc<AtomicUsize>,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>> {
     if fragment_ids.is_empty() {
         return Err(Error::invalid_input(
@@ -591,32 +693,36 @@ fn sample_training_data_scan_from_fragments(
             selected_fragments,
             HashSet::<u64>::with_capacity(sample_size_hint.min(num_rows)),
             SmallRng::from_os_rng(),
+            still_needed,
         ),
-        move |(dataset, projection, selected_fragments, mut seen_offsets, mut rng)| async move {
+        move |(
+            dataset,
+            projection,
+            selected_fragments,
+            mut seen_offsets,
+            mut rng,
+            still_needed,
+        )| async move {
             if seen_offsets.len() >= num_rows {
                 return Ok(None);
             }
 
+            let still = still_needed.load(Ordering::Relaxed);
+            if still == 0 {
+                return Ok(None);
+            }
             let remaining = num_rows.saturating_sub(seen_offsets.len());
-            let target = sample_size_hint.saturating_mul(2).min(remaining);
-            let mut sampled_offsets = if remaining <= target.saturating_mul(4) {
-                let mut unseen_indices = (0..num_rows as u64)
-                    .filter(|index| !seen_offsets.contains(index))
-                    .collect::<Vec<_>>();
-                unseen_indices.shuffle(&mut rng);
-                unseen_indices.truncate(target);
-                seen_offsets.extend(unseen_indices.iter().copied());
-                unseen_indices
-            } else {
-                let mut sampled_offsets = Vec::with_capacity(target);
-                while sampled_offsets.len() < target {
-                    let index = rng.random_range(0..num_rows as u64);
-                    if seen_offsets.insert(index) {
-                        sampled_offsets.push(index);
-                    }
-                }
-                sampled_offsets
-            };
+            // Bounded over-fetch (~12.5%) absorbs a low null rate without a
+            // second round-trip but never blows past the consumer's outstanding
+            // need by more than a small constant factor.
+            let target = still.saturating_add(still.div_ceil(8)).min(remaining);
+            let mut sampled_offsets = sample_unseen_indices(
+                &mut rng,
+                num_rows,
+                &mut seen_offsets,
+                target,
+                DENSE_PATH_INDEX_BUDGET_BYTES,
+            );
             if sampled_offsets.is_empty() {
                 return Ok(None);
             }
@@ -635,7 +741,14 @@ fn sample_training_data_scan_from_fragments(
             .await?;
             Ok(Some((
                 batch,
-                (dataset, projection, selected_fragments, seen_offsets, rng),
+                (
+                    dataset,
+                    projection,
+                    selected_fragments,
+                    seen_offsets,
+                    rng,
+                    still_needed,
+                ),
             )))
         },
     );
@@ -721,6 +834,7 @@ async fn sample_nullable_fsl<S>(
     byte_width: usize,
     vector_field: &lance_core::datatypes::Field,
     mut scan: S,
+    still_needed: Arc<AtomicUsize>,
 ) -> Result<FixedSizeListArray>
 where
     S: Stream<Item = Result<RecordBatch>> + Unpin,
@@ -731,6 +845,10 @@ where
     let mut rows_scanned: usize = 0;
 
     while num_non_null < sample_size_hint {
+        let remaining_rows = sample_size_hint - num_non_null;
+        // Tell the producer how many rows we still need so it can size the next
+        // prefetch tightly rather than blindly fetching `2 × sample_size_hint`.
+        still_needed.store(remaining_rows, Ordering::Relaxed);
         let Some(batch) = scan.next().await else {
             break;
         };
@@ -750,7 +868,16 @@ where
             continue;
         }
         let previous_num_non_null = num_non_null;
-        accumulate_fsl_values(&mut values_buf, &mut num_non_null, &array, byte_width, true)?;
+        // Cap the per-batch append so the output buffer never regrows past its
+        // pre-allocated `sample_size_hint × byte_width` capacity.
+        accumulate_fsl_values(
+            &mut values_buf,
+            &mut num_non_null,
+            &array,
+            byte_width,
+            true,
+            remaining_rows,
+        )?;
         info!(
             "Sample training data: batch {} read {} rows, accepted {} rows ({} scanned, {}/{} sampled after null filtering)",
             batch_count,
@@ -762,6 +889,7 @@ where
         );
     }
 
+    still_needed.store(0, Ordering::Relaxed);
     let num_rows_out = num_non_null.min(sample_size_hint);
     values_buf.truncate(num_rows_out * byte_width);
 
@@ -797,7 +925,14 @@ async fn sample_fsl_uniform(
     for (chunk_idx, chunk) in indices.chunks(TAKE_CHUNK_SIZE).enumerate() {
         let batch = dataset.take(chunk, projection.clone()).await?;
         let array = get_column_from_batch(&batch, column)?;
-        accumulate_fsl_values(&mut values_buf, &mut total_rows, &array, byte_width, false)?;
+        accumulate_fsl_values(
+            &mut values_buf,
+            &mut total_rows,
+            &array,
+            byte_width,
+            false,
+            usize::MAX,
+        )?;
         info!(
             "Sample training data: batch {}/{} read {} rows ({}/{} sampled by uniform random sampling)",
             chunk_idx + 1,
@@ -821,13 +956,20 @@ async fn sample_fsl_uniform(
 /// When `filter_nulls` is false and there are no nulls, copies raw bytes
 /// directly from the FSL values buffer (accounting for child array offset).
 /// When `filter_nulls` is true, uses Arrow's `filter` kernel to remove nulls.
+/// At most `max_rows` rows are appended; this lets callers cap the output
+/// buffer growth when an upstream batch carries more usable rows than they
+/// still need.
 fn accumulate_fsl_values(
     values_buf: &mut MutableBuffer,
     num_rows: &mut usize,
     array: &ArrayRef,
     byte_width: usize,
     filter_nulls: bool,
+    max_rows: usize,
 ) -> Result<()> {
+    if max_rows == 0 {
+        return Ok(());
+    }
     let needs_filter = filter_nulls && array.null_count() > 0;
 
     if needs_filter {
@@ -835,21 +977,29 @@ fn accumulate_fsl_values(
         let mask = arrow_array::BooleanArray::from(nulls.inner().clone());
         let filtered = arrow::compute::filter(array, &mask)?;
         let fsl = filtered.as_fixed_size_list();
+        let take = fsl.len().min(max_rows);
+        if take == 0 {
+            return Ok(());
+        }
         let values_data = fsl.values().to_data();
-        let value_bytes = &values_data.buffers()[0].as_slice()[..fsl.len() * byte_width];
+        let value_bytes = &values_data.buffers()[0].as_slice()[..take * byte_width];
         values_buf.extend_from_slice(value_bytes);
-        *num_rows += fsl.len();
+        *num_rows += take;
     } else {
         // No nulls: copy raw bytes directly, accounting for child array offset.
         let fsl = array.as_fixed_size_list();
+        let take = fsl.len().min(max_rows);
+        if take == 0 {
+            return Ok(());
+        }
         let values = fsl.values();
         let values_data = values.to_data();
         let elem_size = byte_width / fsl.value_length() as usize;
         let offset_bytes = values_data.offset() * elem_size;
-        let total_bytes = fsl.len() * byte_width;
+        let total_bytes = take * byte_width;
         let buf = &values_data.buffers()[0].as_slice()[offset_bytes..offset_bytes + total_bytes];
         values_buf.extend_from_slice(buf);
-        *num_rows += fsl.len();
+        *num_rows += take;
     }
     Ok(())
 }
@@ -862,6 +1012,7 @@ async fn sample_nullable_fallback<S>(
     sample_size_hint: usize,
     is_nullable: bool,
     mut scan: S,
+    still_needed: Arc<AtomicUsize>,
 ) -> Result<FixedSizeListArray>
 where
     S: Stream<Item = Result<RecordBatch>> + Unpin,
@@ -873,6 +1024,10 @@ where
     let mut rows_scanned: usize = 0;
 
     while num_non_null < sample_size_hint {
+        let remaining_rows = sample_size_hint - num_non_null;
+        // Tell the producer how many rows we still need so it can size the next
+        // prefetch tightly rather than blindly fetching `2 × sample_size_hint`.
+        still_needed.store(remaining_rows, Ordering::Relaxed);
         let Some(batch) = scan.next().await else {
             break;
         };
@@ -898,7 +1053,16 @@ where
         } else {
             batch
         };
-        let accepted_rows = batch.num_rows();
+        // Bound the per-batch contribution by what we still need, so the
+        // aggregate visible-row count across `filtered` never exceeds
+        // `sample_size_hint` and the post-loop `concat_batches` output is
+        // sized to the sample, not to the (over-fetched) source.
+        let accepted_rows = batch.num_rows().min(remaining_rows);
+        let batch = if accepted_rows < batch.num_rows() {
+            batch.slice(0, accepted_rows)
+        } else {
+            batch
+        };
         num_non_null += accepted_rows;
         info!(
             "Sample training data (fallback): batch {} read {} rows, accepted {} rows ({} scanned, {}/{} sampled)",
@@ -911,6 +1075,8 @@ where
         );
         filtered.push(batch);
     }
+
+    still_needed.store(0, Ordering::Relaxed);
 
     let Some(schema) = schema else {
         return Err(Error::index("No non-null training data found".to_string()));
@@ -1201,7 +1367,15 @@ mod tests {
         let mut buf = MutableBuffer::new(0);
         let mut num_rows = 0usize;
         let sliced_ref: ArrayRef = Arc::new(sliced);
-        accumulate_fsl_values(&mut buf, &mut num_rows, &sliced_ref, byte_width, false).unwrap();
+        accumulate_fsl_values(
+            &mut buf,
+            &mut num_rows,
+            &sliced_ref,
+            byte_width,
+            false,
+            usize::MAX,
+        )
+        .unwrap();
 
         assert_eq!(num_rows, 4);
         let result: &[f32] =
@@ -1326,5 +1500,340 @@ mod tests {
         // Pass the same two fragments in reverse (unsorted) order; result must match.
         let result = count_rows(&dataset, Some(&[ids[2], ids[0]])).await.unwrap();
         assert_eq!(result, 250);
+    }
+
+    /// End-to-end: nullable FSL with fragment-limited sampling must still fill
+    /// the requested sample size. Previously this path went through the
+    /// `2 × sample_size_hint` prefetch but a regression in the bounded fix
+    /// could leave the consumer short of rows; the test guards against that.
+    #[tokio::test]
+    async fn test_maybe_sample_training_data_fsl_nullable_fragment_limited() {
+        let nrows: usize = 2000;
+        let dims: u32 = 8;
+        let sample_size: usize = 500;
+
+        // ~50% nulls => ~1000 non-null rows, more than the sample size.
+        let col_gen = array::rand_vec::<Float32Type>(Dimension::from(dims)).with_random_nulls(0.5);
+        let data = gen_batch()
+            .col("vec", col_gen)
+            .into_batch_rows(RowCount::from(nrows as u64))
+            .unwrap();
+
+        let dataset = InsertBuilder::new("memory://fsl_sample_fragments_test")
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        let fragment_ids: Vec<u32> = dataset
+            .get_fragments()
+            .iter()
+            .map(|f| f.id() as u32)
+            .collect();
+
+        let training_data =
+            maybe_sample_training_data(&dataset, "vec", sample_size, Some(&fragment_ids))
+                .await
+                .unwrap();
+
+        assert_eq!(training_data.len(), sample_size);
+        assert_eq!(training_data.null_count(), 0);
+        assert_eq!(training_data.value_length(), dims as i32);
+    }
+
+    /// Regression test for the producer-side prefetch cap. The old code
+    /// returned batches of `2 × sample_size_hint` rows; the new code returns
+    /// at most `still_needed + still_needed/8` rows per round.
+    #[tokio::test]
+    async fn test_sample_training_data_scan_from_fragments_bounded_prefetch() {
+        let nrows: usize = 2000;
+        let dims: u32 = 8;
+        let sample_size: usize = 100;
+
+        let col_gen = array::rand_vec::<Float32Type>(Dimension::from(dims));
+        let data = gen_batch()
+            .col("vec", col_gen)
+            .into_batch_rows(RowCount::from(nrows as u64))
+            .unwrap();
+
+        let dataset = InsertBuilder::new("memory://bounded_prefetch_test")
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        let fragment_ids: Vec<u32> = dataset
+            .get_fragments()
+            .iter()
+            .map(|f| f.id() as u32)
+            .collect();
+
+        let num_rows = count_rows(&dataset, Some(&fragment_ids)).await.unwrap();
+        let still_needed = Arc::new(AtomicUsize::new(sample_size));
+        let mut scan = sample_training_data_scan_from_fragments(
+            &dataset,
+            "vec",
+            sample_size,
+            num_rows,
+            &fragment_ids,
+            still_needed.clone(),
+        )
+        .unwrap();
+
+        let first_batch = scan.next().await.unwrap().unwrap();
+        let expected_max_target = sample_size + sample_size.div_ceil(8);
+        assert!(
+            first_batch.num_rows() <= expected_max_target,
+            "first batch produced {} rows, expected at most {} (still_needed + still_needed/8)",
+            first_batch.num_rows(),
+            expected_max_target
+        );
+        // The previous implementation returned `2 × sample_size_hint` per round.
+        // Keep this assertion strict so a revert is caught.
+        assert!(
+            first_batch.num_rows() < 2 * sample_size,
+            "first batch produced {} rows; the old 2× prefetch would have returned {}",
+            first_batch.num_rows(),
+            2 * sample_size
+        );
+    }
+
+    /// `sample_nullable_fsl` must clamp the per-batch append to the still-needed
+    /// row count, so a single oversized upstream batch can't grow the output
+    /// buffer past its pre-allocated `sample_size_hint × byte_width` capacity.
+    #[tokio::test]
+    async fn test_sample_nullable_fsl_caps_per_batch_append() {
+        use futures::stream;
+
+        let sample_size: usize = 100;
+        let dim: usize = 8;
+        let byte_width = dim * std::mem::size_of::<f32>();
+        let oversized_rows: usize = 250;
+
+        let values: Vec<f32> = (0..oversized_rows * dim).map(|i| i as f32).collect();
+        let item_field = Arc::new(arrow_schema::Field::new("item", DataType::Float32, true));
+        let fsl = FixedSizeListArray::try_new(
+            item_field.clone(),
+            dim as i32,
+            Arc::new(Float32Array::from(values)),
+            None,
+        )
+        .unwrap();
+        let fsl_dt = DataType::FixedSizeList(item_field, dim as i32);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "vec",
+            fsl_dt.clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(fsl)]).unwrap();
+
+        let scan = stream::iter(vec![Ok::<_, crate::Error>(batch)]);
+
+        let vector_field = lance_core::datatypes::Field::new_arrow("vec", fsl_dt, true).unwrap();
+        let still_needed = Arc::new(AtomicUsize::new(sample_size));
+        let result = sample_nullable_fsl(
+            "vec",
+            sample_size,
+            byte_width,
+            &vector_field,
+            scan,
+            still_needed,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.len(), sample_size);
+        let out_data = result.values().to_data();
+        let out_bytes = out_data.buffers()[0].as_slice();
+        assert_eq!(out_bytes.len(), sample_size * byte_width);
+        let out_f32: &[f32] = unsafe {
+            std::slice::from_raw_parts(out_bytes.as_ptr() as *const f32, sample_size * dim)
+        };
+        let expected: Vec<f32> = (0..sample_size * dim).map(|i| i as f32).collect();
+        assert_eq!(out_f32, &expected[..]);
+    }
+
+    /// `sample_nullable_fallback` must slice each filtered batch down to the
+    /// remaining-row count before pushing, so the aggregate visible-row count
+    /// (and thus the `concat_batches` output) never exceeds `sample_size_hint`.
+    #[tokio::test]
+    async fn test_sample_nullable_fallback_bounds_output() {
+        use futures::stream;
+
+        let sample_size: usize = 50;
+        let dim: usize = 4;
+        let oversized_rows: usize = 200;
+
+        let values: Vec<f32> = (0..oversized_rows * dim).map(|i| i as f32).collect();
+        let item_field = Arc::new(arrow_schema::Field::new("item", DataType::Float32, false));
+        let fsl = FixedSizeListArray::try_new(
+            item_field.clone(),
+            dim as i32,
+            Arc::new(Float32Array::from(values)),
+            None,
+        )
+        .unwrap();
+        let fsl_dt = DataType::FixedSizeList(item_field, dim as i32);
+        let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "vec", fsl_dt, false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(fsl)]).unwrap();
+
+        let scan = stream::iter(vec![Ok::<_, crate::Error>(batch)]);
+
+        let still_needed = Arc::new(AtomicUsize::new(sample_size));
+        let result = sample_nullable_fallback("vec", sample_size, false, scan, still_needed)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), sample_size);
+        assert_eq!(result.value_length(), dim as i32);
+    }
+
+    /// Direct unit test for the `max_rows` cap in `accumulate_fsl_values`
+    /// (no-filter branch). The old signature accepted no cap and would copy
+    /// the entire array; the cap is what keeps the FSL consumer's output
+    /// buffer from regrowing past its pre-allocated capacity.
+    #[test]
+    fn test_accumulate_fsl_values_respects_max_rows_no_filter() {
+        let dim: usize = 4;
+        let total_rows: usize = 256;
+        let max_rows: usize = 16;
+        let byte_width = dim * std::mem::size_of::<f32>();
+
+        let values: Vec<f32> = (0..total_rows * dim).map(|i| i as f32).collect();
+        let fsl = FixedSizeListArray::try_new_from_values(Float32Array::from(values), dim as i32)
+            .unwrap();
+        let arr: ArrayRef = Arc::new(fsl);
+
+        let mut buf = MutableBuffer::new(0);
+        let mut num_rows = 0usize;
+        accumulate_fsl_values(&mut buf, &mut num_rows, &arr, byte_width, false, max_rows).unwrap();
+
+        assert_eq!(num_rows, max_rows);
+        assert_eq!(buf.len(), max_rows * byte_width);
+        let result: &[f32] =
+            unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, max_rows * dim) };
+        let expected: Vec<f32> = (0..max_rows * dim).map(|i| i as f32).collect();
+        assert_eq!(result, &expected[..]);
+    }
+
+    /// Same as above for the filter-nulls branch. With 50% nulls, the
+    /// filtered array has `total_rows / 2` rows; the cap clamps it further to
+    /// `max_rows`.
+    #[test]
+    fn test_accumulate_fsl_values_respects_max_rows_with_filter() {
+        use arrow_buffer::{BooleanBufferBuilder, NullBuffer};
+
+        let dim: usize = 4;
+        let total_rows: usize = 100;
+        let max_rows: usize = 10;
+        let byte_width = dim * std::mem::size_of::<f32>();
+
+        let values: Vec<f32> = (0..total_rows * dim).map(|i| i as f32).collect();
+        let item_field = Arc::new(Field::new("item", DataType::Float32, true));
+
+        // Even rows are non-null, odd rows are null => 50 non-null rows.
+        let mut nulls_builder = BooleanBufferBuilder::new(total_rows);
+        for i in 0..total_rows {
+            nulls_builder.append(i % 2 == 0);
+        }
+        let nulls = NullBuffer::new(nulls_builder.finish());
+
+        let fsl = FixedSizeListArray::try_new(
+            item_field,
+            dim as i32,
+            Arc::new(Float32Array::from(values)),
+            Some(nulls),
+        )
+        .unwrap();
+        let arr: ArrayRef = Arc::new(fsl);
+
+        let mut buf = MutableBuffer::new(0);
+        let mut num_rows = 0usize;
+        accumulate_fsl_values(&mut buf, &mut num_rows, &arr, byte_width, true, max_rows).unwrap();
+
+        assert_eq!(num_rows, max_rows);
+        assert_eq!(buf.len(), max_rows * byte_width);
+    }
+
+    /// Rejection-sampling branch: `target` is a small fraction of `remaining`
+    /// (`remaining > 4 × target`), so rejection sampling expected-O(target).
+    #[test]
+    fn test_sample_unseen_indices_rejection_path() {
+        let num_rows: usize = 10_000;
+        let target: usize = 100;
+        let mut seen = HashSet::new();
+        let mut rng = SmallRng::seed_from_u64(42);
+        let result = sample_unseen_indices(
+            &mut rng,
+            num_rows,
+            &mut seen,
+            target,
+            DENSE_PATH_INDEX_BUDGET_BYTES,
+        );
+        assert_eq!(result.len(), target);
+        let unique: HashSet<u64> = result.iter().copied().collect();
+        assert_eq!(unique.len(), target);
+        assert!(result.iter().all(|&i| i < num_rows as u64));
+        assert_eq!(seen.len(), target);
+    }
+
+    /// Dense allocate-then-shuffle branch: `target` is comparable to
+    /// `remaining` and the unseen Vec fits within the byte budget.
+    #[test]
+    fn test_sample_unseen_indices_dense_path() {
+        let num_rows: usize = 100;
+        let target: usize = 50;
+        let mut seen = HashSet::new();
+        let mut rng = SmallRng::seed_from_u64(42);
+        let result = sample_unseen_indices(
+            &mut rng,
+            num_rows,
+            &mut seen,
+            target,
+            DENSE_PATH_INDEX_BUDGET_BYTES,
+        );
+        assert_eq!(result.len(), target);
+        let unique: HashSet<u64> = result.iter().copied().collect();
+        assert_eq!(unique.len(), target);
+        assert!(result.iter().all(|&i| i < num_rows as u64));
+        assert_eq!(seen.len(), target);
+    }
+
+    /// Reservoir-sampling branch: `target` is comparable to `remaining` and
+    /// the dense Vec exceeds the byte budget. This is the regression case
+    /// the reviewer flagged — the old code would fall back to rejection
+    /// sampling here and stall on `O(num_rows × log num_rows)` draws.
+    #[test]
+    fn test_sample_unseen_indices_reservoir_path() {
+        let num_rows: usize = 1_000;
+        let target: usize = 400;
+        let mut seen = HashSet::new();
+        let mut rng = SmallRng::seed_from_u64(42);
+        // Force the reservoir branch by setting the dense budget to 0.
+        let result = sample_unseen_indices(&mut rng, num_rows, &mut seen, target, 0);
+        assert_eq!(result.len(), target);
+        let unique: HashSet<u64> = result.iter().copied().collect();
+        assert_eq!(unique.len(), target);
+        assert!(result.iter().all(|&i| i < num_rows as u64));
+        assert_eq!(seen.len(), target);
+    }
+
+    /// Reservoir branch must respect `seen_offsets` and only draw from the
+    /// unseen subset.
+    #[test]
+    fn test_sample_unseen_indices_reservoir_skips_seen() {
+        let num_rows: usize = 100;
+        let target: usize = 40;
+        let already_seen: HashSet<u64> = (0..50).collect();
+        let mut seen = already_seen.clone();
+        let mut rng = SmallRng::seed_from_u64(42);
+        // Force the reservoir branch.
+        let result = sample_unseen_indices(&mut rng, num_rows, &mut seen, target, 0);
+        assert_eq!(result.len(), target);
+        // All sampled indices must come from the unseen tail `[50, 100)`.
+        assert!(result.iter().all(|&i| i >= 50 && i < num_rows as u64));
+        let unique: HashSet<u64> = result.iter().copied().collect();
+        assert_eq!(unique.len(), target);
+        assert_eq!(seen.len(), already_seen.len() + target);
     }
 }
