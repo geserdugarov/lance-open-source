@@ -91,7 +91,7 @@ use crate::index::mem_wal::open_mem_wal_index;
 pub use crate::index::prefilter::{FilterLoader, PreFilter};
 use crate::index::scalar::{IndexDetails, fetch_index_details, load_training_data};
 pub use crate::index::vector::{LogicalIvfView, LogicalVectorIndex};
-use crate::session::index_caches::{FragReuseIndexKey, IndexMetadataKey};
+use crate::session::index_caches::{FragReuseIndexKey, IndexMetadataKey, ScalarIndexDetailsKey};
 use crate::{Error, Result, dataset::Dataset};
 pub use create::CreateIndexBuilder;
 pub use lance_index::IndexDescription;
@@ -389,7 +389,8 @@ impl CacheKey for MemWalCacheKey<'_> {
 ///
 /// Called after a successful `Operation::CreateIndex` commit so subsequent
 /// reads cannot serve a stale `LegacyVectorIndex` / `IvfIndexState` root entry,
-/// or a per-partition entry for an index UUID that no longer exists in the
+/// a `ScalarIndexDetails` entry inferred for an old-format scalar index, or
+/// a per-partition entry for an index UUID that no longer exists in the
 /// manifest. Both shapes of the cache key — bare `uuid` and `uuid-fri_uuid`
 /// (used when a fragment-reuse index is in effect) — are cleared so a FRI
 /// added or removed during the index's lifetime can never leave stale state
@@ -409,6 +410,11 @@ pub(crate) async fn invalidate_removed_index_caches(
             .await;
         cache
             .invalidate_with_key(&IvfIndexStateCacheKey::new(&uuid_str, None))
+            .await;
+        // Scalar index details cached during the inference fallback for
+        // pre-manifest-details datasets are keyed solely by the index UUID.
+        cache
+            .invalidate_with_key(&ScalarIndexDetailsKey { uuid: &uuid_str })
             .await;
         cache.invalidate_prefix(&format!("{}/", uuid_str)).await;
 
@@ -2578,6 +2584,7 @@ mod tests {
     use crate::dataset::{WriteMode, WriteParams};
     use crate::index::vector::VectorIndexParams;
     use crate::session::Session;
+    use crate::session::index_caches::ProstAny;
     use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount, copy_test_data_to_tmp};
     use arrow::array::AsArray;
     use arrow::datatypes::{Float32Type, Int32Type};
@@ -4206,6 +4213,24 @@ mod tests {
             "IvfIndexState entry for the freshly opened index should be cached",
         );
 
+        // Seed a ScalarIndexDetailsKey for the soon-to-be-retired UUID. The
+        // inference fallback in `infer_scalar_index_details` populates this
+        // key on pre-manifest-details datasets, and the helper must also
+        // drop those entries so a recycled UUID can never serve stale
+        // details.
+        let scalar_details = Arc::new(ProstAny(Arc::new(
+            prost_types::Any::from_msg(&BTreeIndexDetails::default()).unwrap(),
+        )));
+        dataset
+            .index_cache
+            .insert_with_key(
+                &ScalarIndexDetailsKey {
+                    uuid: &old_uuid_str,
+                },
+                scalar_details,
+            )
+            .await;
+
         // Retraining forces optimize_indices to retire the existing segment
         // (replaced by a new UUID), which is the path the helper guards.
         dataset
@@ -4237,6 +4262,16 @@ mod tests {
                 .await
                 .is_none(),
             "stale LegacyVectorIndex root entry must be invalidated",
+        );
+        assert!(
+            dataset
+                .index_cache
+                .get_with_key(&ScalarIndexDetailsKey {
+                    uuid: &old_uuid_str,
+                })
+                .await
+                .is_none(),
+            "stale ScalarIndexDetails entry must be invalidated",
         );
 
         // The partition sub-cache prefix must have no surviving entries:
