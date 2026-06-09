@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::FutureExt;
 use itertools::Itertools;
-use lance_core::cache::{CacheKey, LanceCache};
+use lance_core::cache::CacheKey;
 use lance_core::datatypes::Field;
 use lance_core::datatypes::Schema as LanceSchema;
 use lance_core::utils::address::RowAddress;
@@ -91,7 +91,7 @@ use crate::index::mem_wal::open_mem_wal_index;
 pub use crate::index::prefilter::{FilterLoader, PreFilter};
 use crate::index::scalar::{IndexDetails, fetch_index_details, load_training_data};
 pub use crate::index::vector::{LogicalIvfView, LogicalVectorIndex};
-use crate::session::index_caches::{FragReuseIndexKey, IndexMetadataKey, ScalarIndexDetailsKey};
+use crate::session::index_caches::{FragReuseIndexKey, IndexMetadataKey};
 use crate::{Error, Result, dataset::Dataset};
 pub use create::CreateIndexBuilder;
 pub use lance_index::IndexDescription;
@@ -381,55 +381,6 @@ impl CacheKey for MemWalCacheKey<'_> {
 
     fn type_name() -> &'static str {
         "MemWalIndex"
-    }
-}
-
-/// Drop cached entries belonging to each `removed_indices` UUID from the
-/// dataset-level index cache.
-///
-/// Called after a successful `Operation::CreateIndex` commit so subsequent
-/// reads cannot serve a stale `LegacyVectorIndex` / `IvfIndexState` root entry,
-/// a `ScalarIndexDetails` entry inferred for an old-format scalar index, or
-/// a per-partition entry for an index UUID that no longer exists in the
-/// manifest. Both shapes of the cache key — bare `uuid` and `uuid-fri_uuid`
-/// (used when a fragment-reuse index is in effect) — are cleared so a FRI
-/// added or removed during the index's lifetime can never leave stale state
-/// behind.
-pub(crate) async fn invalidate_removed_index_caches(
-    cache: &LanceCache,
-    removed_indices: &[IndexMetadata],
-    current_fri_uuid: Option<&Uuid>,
-) {
-    for removed in removed_indices {
-        let uuid_str = removed.uuid.to_string();
-
-        // Root entries and partition prefix that were keyed by the bare UUID
-        // (when no fragment-reuse index was active).
-        cache
-            .invalidate_with_key(&LegacyVectorIndexCacheKey::new(&uuid_str, None))
-            .await;
-        cache
-            .invalidate_with_key(&IvfIndexStateCacheKey::new(&uuid_str, None))
-            .await;
-        // Scalar index details cached during the inference fallback for
-        // pre-manifest-details datasets are keyed solely by the index UUID.
-        cache
-            .invalidate_with_key(&ScalarIndexDetailsKey { uuid: &uuid_str })
-            .await;
-        cache.invalidate_prefix(&format!("{}/", uuid_str)).await;
-
-        // Same set under the `uuid-fri_uuid` namespace if a FRI is in effect.
-        if let Some(fri_uuid) = current_fri_uuid {
-            cache
-                .invalidate_with_key(&LegacyVectorIndexCacheKey::new(&uuid_str, Some(fri_uuid)))
-                .await;
-            cache
-                .invalidate_with_key(&IvfIndexStateCacheKey::new(&uuid_str, Some(fri_uuid)))
-                .await;
-            cache
-                .invalidate_prefix(&format!("{}-{}/", uuid_str, fri_uuid))
-                .await;
-        }
     }
 }
 
@@ -2584,7 +2535,6 @@ mod tests {
     use crate::dataset::{WriteMode, WriteParams};
     use crate::index::vector::VectorIndexParams;
     use crate::session::Session;
-    use crate::session::index_caches::ProstAny;
     use crate::utils::test::{DatagenExt, FragmentCount, FragmentRowCount, copy_test_data_to_tmp};
     use arrow::array::AsArray;
     use arrow::datatypes::{Float32Type, Int32Type};
@@ -4145,13 +4095,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_optimize_indices_invalidates_removed_index_cache() {
-        // Build an IVF-PQ index, prewarm it so the IvfIndexState root entry
-        // and per-partition entries land in the dataset's index cache, then
-        // run a retraining optimize_indices that retires the original
-        // segment. Stale cache entries keyed by the old UUID must be gone
-        // after the commit — otherwise a follow-up open could serve a state
-        // that no longer matches anything on disk.
+    async fn test_create_index_preserves_cache_for_pinned_reader() {
+        // Regression: an MVCC reader (or a pinned older checkout) that
+        // shares the session's `index_cache` with a writer must keep
+        // serving prewarmed entries after a `CreateIndex` commit retires
+        // the index segment in the latest manifest. Index UUIDs are
+        // freshly generated and never recycled, so the cached state is
+        // still correct for the older manifest; dropping it on commit
+        // would force the pinned reader to re-hydrate from disk on every
+        // concurrent retrain.
         let nrows = 256;
         let dimensions = 16;
         let column_name = "vector";
@@ -4198,93 +4150,67 @@ mod tests {
         let old_uuid_str = old_uuid.to_string();
         let index_name = old_meta.name.clone();
 
-        // Prewarm populates both the IvfIndexState root entry and the
-        // partition entries that live under the `uuid/` sub-prefix.
+        // Prewarm hydrates the IvfIndexState root entry under the
+        // bare-UUID key in the shared session cache.
         dataset.prewarm_index(&index_name).await.unwrap();
 
-        // Sanity: at least the IvfIndexState root entry should be cached
-        // now. If this ever stops holding the helper would silently pass.
+        let old_key = IvfIndexStateCacheKey::new(&old_uuid_str, None);
         assert!(
-            dataset
-                .index_cache
-                .get_with_key(&IvfIndexStateCacheKey::new(&old_uuid_str, None))
-                .await
-                .is_some(),
+            dataset.index_cache.get_with_key(&old_key).await.is_some(),
             "IvfIndexState entry for the freshly opened index should be cached",
         );
 
-        // Seed a ScalarIndexDetailsKey for the soon-to-be-retired UUID. The
-        // inference fallback in `infer_scalar_index_details` populates this
-        // key on pre-manifest-details datasets, and the helper must also
-        // drop those entries so a recycled UUID can never serve stale
-        // details.
-        let scalar_details = Arc::new(ProstAny(Arc::new(
-            prost_types::Any::from_msg(&BTreeIndexDetails::default()).unwrap(),
-        )));
-        dataset
-            .index_cache
-            .insert_with_key(
-                &ScalarIndexDetailsKey {
-                    uuid: &old_uuid_str,
-                },
-                scalar_details,
-            )
-            .await;
+        // Snapshot the pre-retrain state. The clone holds the old
+        // `Arc<Manifest>` (still pointing at the old UUID) but shares the
+        // session-level `index_cache` Arc with `dataset`. This models an
+        // MVCC reader or a `checkout_version` pin.
+        let pinned_reader = dataset.clone();
+        let pinned_old_uuid = pinned_reader
+            .load_indices()
+            .await
+            .unwrap()
+            .iter()
+            .find(|idx| idx.fields == old_meta.fields)
+            .expect("vector index should be present in pinned view")
+            .uuid;
+        assert_eq!(
+            pinned_old_uuid, old_uuid,
+            "pinned reader must still reference the original index UUID",
+        );
 
-        // Retraining forces optimize_indices to retire the existing segment
-        // (replaced by a new UUID), which is the path the helper guards.
+        // Retrain replaces the segment with a fresh UUID. With the
+        // previous invalidation behavior in place this commit also
+        // wiped the cache entry under `old_uuid_str`, which is exactly
+        // what this test guards against.
         dataset
             .optimize_indices(&OptimizeOptions::retrain())
             .await
             .unwrap();
 
-        let new_indices = dataset.load_indices().await.unwrap();
-        let new_uuid = new_indices
+        let new_uuid = dataset
+            .load_indices()
+            .await
+            .unwrap()
             .iter()
             .find(|idx| idx.fields == old_meta.fields)
             .expect("vector index should be present after optimize")
             .uuid;
         assert_ne!(new_uuid, old_uuid, "retrain must produce a new UUID");
 
-        // Root entries keyed by the old UUID must be gone.
+        // Both views of the shared cache must still serve the old UUID's
+        // prewarmed IvfIndexState entry — both the writer's session view
+        // and the pinned reader's are the same backing cache.
         assert!(
-            dataset
-                .index_cache
-                .get_with_key(&IvfIndexStateCacheKey::new(&old_uuid_str, None))
-                .await
-                .is_none(),
-            "stale IvfIndexState root entry must be invalidated",
+            dataset.index_cache.get_with_key(&old_key).await.is_some(),
+            "writer's session cache must retain the retired index's prewarmed entry",
         );
         assert!(
-            dataset
+            pinned_reader
                 .index_cache
-                .get_with_key(&LegacyVectorIndexCacheKey::new(&old_uuid_str, None))
+                .get_with_key(&old_key)
                 .await
-                .is_none(),
-            "stale LegacyVectorIndex root entry must be invalidated",
-        );
-        assert!(
-            dataset
-                .index_cache
-                .get_with_key(&ScalarIndexDetailsKey {
-                    uuid: &old_uuid_str,
-                })
-                .await
-                .is_none(),
-            "stale ScalarIndexDetails entry must be invalidated",
-        );
-
-        // The partition sub-cache prefix must have no surviving entries:
-        // re-invalidating it should be a no-op.
-        let size_before = dataset.index_cache.size().await;
-        dataset
-            .index_cache
-            .invalidate_prefix(&format!("{}/", old_uuid_str))
-            .await;
-        let size_after = dataset.index_cache.size().await;
-        assert_eq!(
-            size_before, size_after,
-            "no cache entries should remain under the removed index's UUID prefix",
+                .is_some(),
+            "pinned reader's view of the shared cache must retain the retired index's prewarmed entry",
         );
     }
 
