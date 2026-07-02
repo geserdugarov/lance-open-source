@@ -44,6 +44,7 @@ use lance_table::format::SelfDescribingFileReader;
 use lance_table::io::manifest::ManifestDescribing;
 use object_store::path::Path;
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 
 use crate::Result;
 
@@ -278,167 +279,231 @@ pub(super) async fn write_hnsw_quantization_index_partitions(
     }
 
     let object_store = ObjectStore::local();
-    let mut part_files = Vec::with_capacity(ivf.num_partitions());
-    let mut aux_part_files = Vec::with_capacity(ivf.num_partitions());
-    // Bind the guard to keep the scratch directory alive for the whole function;
-    // dropping it earlier would delete the partition files before they are read back.
+    // Declare the scratch-directory guard before the inner async block below.
+    // Its Drop recursively removes the scratch dir, so it must run only after
+    // every spawned partition task has terminated. Dropping a `JoinHandle`
+    // detaches its task, so an early `?` inside the block would leave partition
+    // builds running and writing into the scratch dir while the removal races
+    // them; the error path drains the outstanding tasks (see
+    // `drain_partition_tasks`) before this guard drops.
     let tmp_part_dir_guard = TempStdDir::default();
     let tmp_part_dir = Path::from_filesystem_path(&tmp_part_dir_guard)?;
-    let mut tasks = Vec::with_capacity(ivf.num_partitions());
-    let sem = Arc::new(Semaphore::new(*HNSW_PARTITIONS_BUILD_PARALLEL));
-    for part_id in 0..ivf.num_partitions() {
-        part_files.push(tmp_part_dir.clone().join(format!("hnsw_part_{}", part_id)));
-        aux_part_files.push(
-            tmp_part_dir
-                .clone()
-                .join(format!("hnsw_part_aux_{}", part_id)),
-        );
 
-        let mut code_array: Vec<Arc<dyn Array>> = vec![];
-        let mut row_id_array: Vec<Arc<dyn Array>> = vec![];
+    // One handle per partition, kept as `Option` so the consume loop can
+    // `take()` each one as it processes it, leaving any not-yet-consumed handles
+    // behind for the drain step on the error path.
+    let mut tasks: Vec<Option<JoinHandle<Result<usize>>>> =
+        Vec::with_capacity(ivf.num_partitions());
 
-        // We don't transform vectors to SQ codes while shuffling,
-        // so we won't merge SQ codes from the stream.
+    let build_result: Result<(Vec<HnswMetadata>, IvfModel)> = async {
+        let mut part_files = Vec::with_capacity(ivf.num_partitions());
+        let mut aux_part_files = Vec::with_capacity(ivf.num_partitions());
+        let sem = Arc::new(Semaphore::new(*HNSW_PARTITIONS_BUILD_PARALLEL));
+        for part_id in 0..ivf.num_partitions() {
+            part_files.push(tmp_part_dir.clone().join(format!("hnsw_part_{}", part_id)));
+            aux_part_files.push(
+                tmp_part_dir
+                    .clone()
+                    .join(format!("hnsw_part_aux_{}", part_id)),
+            );
 
-        if let Some(&previous_indices) = existing_indices.as_ref() {
-            for &idx in previous_indices.iter() {
-                let sub_index = idx
-                    .load_partition(part_id, true, &NoOpMetricsCollector)
-                    .await?;
-                let row_ids = Arc::new(UInt64Array::from_iter_values(sub_index.row_ids().cloned()));
-                row_id_array.push(row_ids);
+            let mut code_array: Vec<Arc<dyn Array>> = vec![];
+            let mut row_id_array: Vec<Arc<dyn Array>> = vec![];
+
+            // We don't transform vectors to SQ codes while shuffling,
+            // so we won't merge SQ codes from the stream.
+
+            if let Some(&previous_indices) = existing_indices.as_ref() {
+                for &idx in previous_indices.iter() {
+                    let sub_index = idx
+                        .load_partition(part_id, true, &NoOpMetricsCollector)
+                        .await?;
+                    let row_ids =
+                        Arc::new(UInt64Array::from_iter_values(sub_index.row_ids().cloned()));
+                    row_id_array.push(row_ids);
+                }
             }
-        }
 
-        let code_column = match &quantizer {
-            Quantizer::Product(pq) => Some(pq.column()),
-            _ => None,
-        };
-        merge_streams(
-            &mut streams_heap,
-            &mut new_streams,
-            part_id as u32,
-            code_column,
-            &mut code_array,
-            &mut row_id_array,
-        )
-        .await?;
-
-        if row_id_array.is_empty() {
-            tasks.push(tokio::spawn(async { Ok(0) }));
-            continue;
-        }
-
-        let (part_file, aux_part_file) = (&part_files[part_id], &aux_part_files[part_id]);
-        let part_writer = PreviousFileWriter::<ManifestDescribing>::try_new(
-            &object_store,
-            part_file,
-            Schema::try_from(writer.schema())?,
-            &Default::default(),
-        )
-        .await?;
-
-        let aux_part_writer = match auxiliary_writer.as_ref() {
-            Some(writer) => Some(
-                PreviousFileWriter::<ManifestDescribing>::try_new(
-                    &object_store,
-                    aux_part_file,
-                    Schema::try_from(writer.schema())?,
-                    &Default::default(),
-                )
-                .await?,
-            ),
-            None => None,
-        };
-
-        let dataset = dataset.clone();
-        let column = column.to_owned();
-        let hnsw_params = hnsw_params.clone();
-        let quantizer = quantizer.clone();
-        let sem = sem.clone();
-        tasks.push(tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore error");
-
-            log::debug!("Building HNSW partition {}", part_id);
-            let result = build_hnsw_quantization_partition(
-                dataset,
-                &column,
-                distance_type,
-                hnsw_params,
-                part_writer,
-                aux_part_writer,
-                quantizer,
-                row_id_array,
-                code_array,
+            let code_column = match &quantizer {
+                Quantizer::Product(pq) => Some(pq.column()),
+                _ => None,
+            };
+            merge_streams(
+                &mut streams_heap,
+                &mut new_streams,
+                part_id as u32,
+                code_column,
+                &mut code_array,
+                &mut row_id_array,
             )
-            .await;
-            log::debug!("Finished building HNSW partition {}", part_id);
-            result
-        }));
-    }
+            .await?;
 
-    let mut aux_ivf = IvfModel::empty();
-    let mut hnsw_metadata = Vec::with_capacity(ivf.num_partitions());
-    for (part_id, task) in tasks.into_iter().enumerate() {
-        let offset = writer.len();
-        let num_rows = task.await??;
+            if row_id_array.is_empty() {
+                tasks.push(Some(tokio::spawn(async { Ok(0) })));
+                continue;
+            }
 
-        if num_rows == 0 {
-            ivf.add_partition(0);
-            aux_ivf.add_partition(0);
-            hnsw_metadata.push(HnswMetadata::default());
-            continue;
+            let (part_file, aux_part_file) = (&part_files[part_id], &aux_part_files[part_id]);
+            let part_writer = PreviousFileWriter::<ManifestDescribing>::try_new(
+                &object_store,
+                part_file,
+                Schema::try_from(writer.schema())?,
+                &Default::default(),
+            )
+            .await?;
+
+            let aux_part_writer = match auxiliary_writer.as_ref() {
+                Some(writer) => Some(
+                    PreviousFileWriter::<ManifestDescribing>::try_new(
+                        &object_store,
+                        aux_part_file,
+                        Schema::try_from(writer.schema())?,
+                        &Default::default(),
+                    )
+                    .await?,
+                ),
+                None => None,
+            };
+
+            let dataset = dataset.clone();
+            let column = column.to_owned();
+            let hnsw_params = hnsw_params.clone();
+            let quantizer = quantizer.clone();
+            let sem = sem.clone();
+            tasks.push(Some(tokio::spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore error");
+
+                log::debug!("Building HNSW partition {}", part_id);
+                let result = build_hnsw_quantization_partition(
+                    dataset,
+                    &column,
+                    distance_type,
+                    hnsw_params,
+                    part_writer,
+                    aux_part_writer,
+                    quantizer,
+                    row_id_array,
+                    code_array,
+                )
+                .await;
+                log::debug!("Finished building HNSW partition {}", part_id);
+                result
+            })));
         }
 
-        let (part_file, aux_part_file) = (&part_files[part_id], &aux_part_files[part_id]);
-        let part_reader =
-            PreviousFileReader::try_new_self_described(&object_store, part_file, None).await?;
+        let mut aux_ivf = IvfModel::empty();
+        let mut hnsw_metadata = Vec::with_capacity(ivf.num_partitions());
+        for (part_id, task) in tasks.iter_mut().enumerate() {
+            let task = task
+                .take()
+                .expect("each partition task is consumed exactly once");
+            let offset = writer.len();
+            let num_rows = task.await??;
 
-        let batches = futures::stream::iter(0..part_reader.num_batches())
-            .map(|batch_id| {
-                part_reader.read_batch(
-                    batch_id as i32,
-                    ReadBatchParams::RangeFull,
-                    part_reader.schema(),
-                )
-            })
-            .buffered(object_store.io_parallelism())
-            .try_collect::<Vec<_>>()
-            .await?;
-        writer.write(&batches).await?;
+            if num_rows == 0 {
+                ivf.add_partition(0);
+                aux_ivf.add_partition(0);
+                hnsw_metadata.push(HnswMetadata::default());
+                continue;
+            }
 
-        ivf.add_partition((writer.len() - offset) as u32);
-        hnsw_metadata.push(serde_json::from_str(
-            part_reader.schema().metadata[HNSW::metadata_key()].as_str(),
-        )?);
-        std::mem::drop(part_reader);
-        object_store.delete(part_file).await?;
+            let (part_file, aux_part_file) = (&part_files[part_id], &aux_part_files[part_id]);
+            let part_reader =
+                PreviousFileReader::try_new_self_described(&object_store, part_file, None).await?;
 
-        if let Some(aux_writer) = auxiliary_writer.as_mut() {
-            let aux_part_reader =
-                PreviousFileReader::try_new_self_described(&object_store, aux_part_file, None)
-                    .await?;
-
-            let batches = futures::stream::iter(0..aux_part_reader.num_batches())
+            let batches = futures::stream::iter(0..part_reader.num_batches())
                 .map(|batch_id| {
-                    aux_part_reader.read_batch(
+                    part_reader.read_batch(
                         batch_id as i32,
                         ReadBatchParams::RangeFull,
-                        aux_part_reader.schema(),
+                        part_reader.schema(),
                     )
                 })
                 .buffered(object_store.io_parallelism())
                 .try_collect::<Vec<_>>()
                 .await?;
-            std::mem::drop(aux_part_reader);
-            object_store.delete(aux_part_file).await?;
+            writer.write(&batches).await?;
 
-            aux_writer.write(&batches).await?;
-            aux_ivf.add_partition(num_rows as u32);
+            ivf.add_partition((writer.len() - offset) as u32);
+            hnsw_metadata.push(serde_json::from_str(
+                part_reader.schema().metadata[HNSW::metadata_key()].as_str(),
+            )?);
+            std::mem::drop(part_reader);
+            object_store.delete(part_file).await?;
+
+            if let Some(aux_writer) = auxiliary_writer.as_mut() {
+                let aux_part_reader =
+                    PreviousFileReader::try_new_self_described(&object_store, aux_part_file, None)
+                        .await?;
+
+                let batches = futures::stream::iter(0..aux_part_reader.num_batches())
+                    .map(|batch_id| {
+                        aux_part_reader.read_batch(
+                            batch_id as i32,
+                            ReadBatchParams::RangeFull,
+                            aux_part_reader.schema(),
+                        )
+                    })
+                    .buffered(object_store.io_parallelism())
+                    .try_collect::<Vec<_>>()
+                    .await?;
+                std::mem::drop(aux_part_reader);
+                object_store.delete(aux_part_file).await?;
+
+                aux_writer.write(&batches).await?;
+                aux_ivf.add_partition(num_rows as u32);
+            }
+        }
+
+        Ok((hnsw_metadata, aux_ivf))
+    }
+    .await;
+
+    // On any error after the first spawn, the not-yet-consumed handles are still
+    // `Some`. Abort and await them so no detached task keeps writing into the
+    // scratch dir once `tmp_part_dir_guard` drops. Their late failures are
+    // logged rather than discarded; the first error (`build_result`) is what we
+    // propagate.
+    if build_result.is_err() {
+        for err in drain_partition_tasks(&mut tasks).await {
+            log::warn!(
+                "HNSW partition build task failed while draining after an earlier error: {err}"
+            );
         }
     }
 
-    Ok((hnsw_metadata, aux_ivf))
+    build_result
+}
+
+/// Abort and await every still-outstanding partition-build task, returning the
+/// non-cancellation errors they surfaced.
+///
+/// Called on the error path of [`write_hnsw_quantization_index_partitions`]
+/// before its scratch-directory guard is dropped. Dropping a [`JoinHandle`]
+/// detaches the task, so a bare early return would leave partition builds
+/// running and writing into the scratch dir while its recursive removal runs.
+/// Awaiting an aborted handle resolves only once the task has actually stopped,
+/// so once this returns no task can still touch the scratch dir. Cancellation
+/// [`JoinError`](tokio::task::JoinError)s are the expected outcome of the abort
+/// and are ignored; genuine build failures and panics are returned so the caller
+/// can surface them instead of losing them.
+async fn drain_partition_tasks(tasks: &mut [Option<JoinHandle<Result<usize>>>]) -> Vec<Error> {
+    let mut errors = Vec::new();
+    for task in tasks.iter_mut() {
+        let Some(handle) = task.take() else {
+            continue;
+        };
+        handle.abort();
+        match handle.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => errors.push(e),
+            Err(join_err) if join_err.is_cancelled() => {}
+            Err(join_err) => errors.push(Error::io(format!(
+                "HNSW partition build task panicked: {join_err}"
+            ))),
+        }
+    }
+    errors
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -476,24 +541,26 @@ async fn build_hnsw_quantization_partition(
     let build_hnsw =
         build_and_write_hnsw(vectors.clone(), (*hnsw_params).clone(), metric_type, writer);
 
+    // Join the PQ-storage build as a plain future instead of a detached
+    // `tokio::spawn`: it owns `aux_writer`, a writer for a scratch-dir file, so
+    // it must be cancelled together with this partition task. A spawned task
+    // would detach when this future is dropped (e.g. when the enclosing task is
+    // aborted during the error-path drain) and keep writing under the scratch dir
+    // after the guard removes it. Joining also surfaces its errors, which a
+    // discarded `JoinHandle` would swallow.
     let build_store = match quantizer {
         Quantizer::Flat(_) => {
             return Err(Error::index(
                 "Flat quantizer is not supported for IVF_HNSW".to_string(),
             ));
         }
-        Quantizer::Product(pq) => tokio::spawn(build_and_write_pq_storage(
-            metric_type,
-            row_ids,
-            code_array,
-            pq,
-            aux_writer.unwrap(),
-        )),
-
+        Quantizer::Product(pq) => {
+            build_and_write_pq_storage(metric_type, row_ids, code_array, pq, aux_writer.unwrap())
+        }
         _ => unreachable!("IVF_HNSW_SQ has been moved to v2 index builder"),
     };
 
-    let index_rows = futures::join!(build_hnsw, build_store).0?;
+    let (index_rows, ()) = futures::try_join!(build_hnsw, build_store)?;
     assert!(
         index_rows >= num_rows,
         "index rows {} must be greater than or equal to num rows {}",
@@ -532,6 +599,8 @@ async fn build_and_write_pq_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use crate::Dataset;
     use crate::index::vector::ivf::v2;
@@ -591,5 +660,87 @@ mod tests {
             .expect("Invalid index type");
 
         //let indices = /ds.
+    }
+
+    /// The drain step must outlive every spawned task: it aborts and awaits each
+    /// one so that, once it returns, no task is still running against the scratch
+    /// directory. It must also surface late failures rather than swallow them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_drain_partition_tasks_waits_and_reports_errors() {
+        // Scratch dir guard analogous to the one held by
+        // `write_hnsw_quantization_index_partitions`; tasks read from it, and it
+        // is dropped only after the drain completes.
+        let scratch_guard = TempStdDir::default();
+        let scratch_path = scratch_guard.to_path_buf();
+
+        // Number of task futures currently live. The drop guard decrements on
+        // both normal completion and cancellation, so a zero count after the
+        // drain proves every task's future was actually dropped -- i.e. the task
+        // terminated -- before the drain returned, rather than being detached.
+        let live = Arc::new(AtomicUsize::new(0));
+        let saw_missing_dir = Arc::new(AtomicBool::new(false));
+
+        struct LiveGuard(Arc<AtomicUsize>);
+        impl Drop for LiveGuard {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        const NUM_SLOW: usize = 3;
+        let mut tasks: Vec<Option<JoinHandle<Result<usize>>>> = Vec::new();
+
+        // Tasks that never resolve on their own: only the abort can stop them, so
+        // a drain that failed to abort would hang here.
+        for _ in 0..NUM_SLOW {
+            let live = live.clone();
+            let saw_missing_dir = saw_missing_dir.clone();
+            let scratch_path = scratch_path.clone();
+            tasks.push(Some(tokio::spawn(async move {
+                live.fetch_add(1, Ordering::SeqCst);
+                let _guard = LiveGuard(live.clone());
+                if !scratch_path.exists() {
+                    saw_missing_dir.store(true, Ordering::SeqCst);
+                }
+                futures::future::pending::<()>().await;
+                Ok(0)
+            })));
+        }
+
+        // A task that fails; its error must be returned, not silently dropped.
+        tasks.push(Some(tokio::spawn(async move {
+            Err(Error::io("late partition failure".to_string()))
+        })));
+
+        // Ensure all slow tasks are actually running before draining, so the
+        // drain has to await their cancellation rather than aborting them before
+        // they ever start.
+        while live.load(Ordering::SeqCst) < NUM_SLOW {
+            tokio::task::yield_now().await;
+        }
+
+        let errors = drain_partition_tasks(&mut tasks).await;
+
+        assert!(tasks.iter().all(Option::is_none), "handles left undrained");
+        assert_eq!(
+            live.load(Ordering::SeqCst),
+            0,
+            "a task was still running after the drain returned"
+        );
+        assert!(
+            !saw_missing_dir.load(Ordering::SeqCst),
+            "scratch dir was removed while a task was still running"
+        );
+        assert_eq!(errors.len(), 1, "expected exactly the one late failure");
+        assert!(
+            errors[0].to_string().contains("late partition failure"),
+            "late failure was not surfaced: {}",
+            errors[0]
+        );
+
+        // The guard, not the drain, removes the scratch dir.
+        assert!(scratch_path.exists());
+        drop(scratch_guard);
+        assert!(!scratch_path.exists());
     }
 }
