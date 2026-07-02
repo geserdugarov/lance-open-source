@@ -8,21 +8,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use arrow::array::ArrayData;
 use arrow::datatypes::DataType;
 use arrow_array::new_empty_array;
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch, cast::AsArray};
+use arrow_array::{
+    Array, ArrayRef, FixedSizeListArray, RecordBatch, cast::AsArray, types::UInt64Type,
+};
 use arrow_buffer::{Buffer, MutableBuffer};
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use lance_arrow::DataTypeExt;
+use lance_core::ROW_ADDR;
 use lance_core::datatypes::Schema;
+use lance_datafusion::projection::ProjectionPlan;
 use lance_linalg::distance::DistanceType;
 use log::{info, warn};
 use rand::rngs::SmallRng;
 use rand::seq::{IteratorRandom, SliceRandom};
 use rand::{Rng, SeedableRng};
-use roaring::RoaringTreemap;
 use tokio::sync::Mutex;
 
-use crate::dataset::{Dataset, ProjectionRequest, TakeBuilder, row_offsets_to_row_addresses};
+use crate::dataset::{Dataset, ProjectionRequest, TakeBuilder};
 use crate::{Error, Result};
+
+/// Rows fetched per `take` when materializing sampled vectors, bounding each
+/// take's batch size and peak memory.
+const TAKE_CHUNK_SIZE: usize = 8192;
 
 /// Helper function to extract a column from a RecordBatch, supporting nested field paths.
 ///
@@ -494,7 +501,7 @@ async fn sample_training_data(
         let scan = sample_training_data_scan_from_fragments(
             dataset,
             column,
-            num_rows,
+            sample_size_hint,
             fragment_ids,
             still_needed.clone(),
         )?;
@@ -573,24 +580,52 @@ fn sample_training_data_scan(
     ))
 }
 
-/// Build a batch stream over fragment-limited random samples.
+/// State threaded through the fragment-limited sampling stream.
+enum FragmentSampleState {
+    /// Runs once on the first poll: a validity-only pre-pass that locates a
+    /// random sample of non-null row addresses.
+    Locate {
+        dataset: Arc<Dataset>,
+        column: String,
+        projection: Arc<ProjectionPlan>,
+        scan_fragments: Vec<lance_table::format::Fragment>,
+        sample_size_hint: usize,
+        still_needed: Arc<AtomicUsize>,
+    },
+    /// Emits `take` batches for the sampled non-null rows, `TAKE_CHUNK_SIZE`
+    /// rows at a time.
+    Take {
+        dataset: Arc<Dataset>,
+        projection: Arc<ProjectionPlan>,
+        row_addrs: Vec<u64>,
+        cursor: usize,
+        still_needed: Arc<AtomicUsize>,
+    },
+}
+
+/// Build a batch stream over a random sample of the *non-null* rows in the
+/// selected fragments.
 ///
-/// This is the only extra sampling helper we keep for ENT-1099. The existing
-/// range-based scan only works for dataset-wide offsets, while fragment-limited
-/// sampling must first map random offsets within the selected fragments to row
-/// addresses and then `take` those rows. Both nullable FSL and multivector
-/// paths reuse this stream to avoid duplicating fragment sampling logic.
+/// A nullable vector column may be extremely sparse or entirely null. Sampling
+/// random offsets and `take`-ing them (as the non-nullable path does) then
+/// reads — only to discard — the full vector bytes of every null row it happens
+/// to hit, and for an all-null column it must visit every selected row before
+/// it can return. To avoid that CPU/I/O cost this first runs a validity-only
+/// pre-pass ([`sample_non_null_row_addresses`]): a scan filtered by
+/// `column IS NOT NULL` that projects only the `_rowaddr` meta column (no vector
+/// bytes), reservoir-sampling the non-null row addresses down to
+/// `sample_size_hint`. It then `take`s only those sampled, guaranteed-non-null
+/// rows. Reservoir sampling bounds the retained state to the requested sample
+/// regardless of how many non-null rows exist, and an all-null column yields an
+/// empty sample and issues no takes at all.
 ///
-/// Each round is sized to `still_needed` (the consumer's outstanding demand),
-/// so a low-null column reads at most the requested sample. Visited offsets
-/// are tracked in a [`RoaringTreemap`] because sparse or all-null columns
-/// force the stream to visit most selected rows before it can terminate, and
-/// a compressed bitmap keeps that persistent state near `num_rows / 8` bytes
-/// even when fully populated.
+/// Both the nullable FSL and multivector paths reuse this stream to avoid
+/// duplicating fragment sampling logic. `still_needed` (the consumer's
+/// outstanding demand) lets the consumer stop the stream early.
 fn sample_training_data_scan_from_fragments(
     dataset: &Dataset,
     column: &str,
-    num_rows: usize,
+    sample_size_hint: usize,
     fragment_ids: &[u32],
     still_needed: Arc<AtomicUsize>,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>> {
@@ -600,21 +635,7 @@ fn sample_training_data_scan_from_fragments(
         ));
     }
 
-    let mut ordered_ids = fragment_ids.to_vec();
-    ordered_ids.sort_unstable();
-    ordered_ids.dedup();
-    let selected_fragments = dataset
-        .get_frags_from_ordered_ids(&ordered_ids)
-        .into_iter()
-        .zip(ordered_ids.iter())
-        .map(|(fragment, fragment_id)| {
-            fragment.ok_or_else(|| {
-                Error::invalid_input(format!(
-                    "Unknown fragment id {fragment_id} in training fragment filter"
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let scan_fragments = resolve_scan_fragments(dataset, fragment_ids)?;
     let dataset = Arc::new(dataset.clone());
     let projection = Arc::new(
         ProjectionRequest::from(dataset.schema().project(&[column])?)
@@ -622,85 +643,129 @@ fn sample_training_data_scan_from_fragments(
     );
 
     let stream = stream::try_unfold(
-        (
+        FragmentSampleState::Locate {
             dataset,
+            column: column.to_string(),
             projection,
-            selected_fragments,
-            RoaringTreemap::new(),
-            SmallRng::from_os_rng(),
+            scan_fragments,
+            sample_size_hint,
             still_needed,
-        ),
-        move |(
-            dataset,
-            projection,
-            selected_fragments,
-            mut seen_offsets,
-            mut rng,
-            still_needed,
-        )| async move {
-            if seen_offsets.len() as usize >= num_rows {
-                return Ok(None);
-            }
-            let still = still_needed.load(Ordering::Relaxed);
-            if still == 0 {
-                return Ok(None);
-            }
-
-            let remaining = num_rows.saturating_sub(seen_offsets.len() as usize);
-            // Sizing the round to the outstanding demand keeps a low-null
-            // column's reads bounded by the requested sample, matching the
-            // non-nullable path.
-            let target = still.min(remaining);
-            let mut sampled_offsets = if remaining <= target.saturating_mul(4) {
-                // Few offsets remain unseen, so shuffling the unseen set is
-                // cheaper than repeatedly rejecting already-sampled offsets.
-                let mut unseen_indices = (0..num_rows as u64)
-                    .filter(|index| !seen_offsets.contains(*index))
-                    .collect::<Vec<_>>();
-                unseen_indices.shuffle(&mut rng);
-                unseen_indices.truncate(target);
-                seen_offsets.extend(unseen_indices.iter().copied());
-                unseen_indices
-            } else {
-                let mut sampled_offsets = Vec::with_capacity(target);
-                while sampled_offsets.len() < target {
-                    let index = rng.random_range(0..num_rows as u64);
-                    if seen_offsets.insert(index) {
-                        sampled_offsets.push(index);
+        },
+        move |state| async move {
+            let (dataset, projection, row_addrs, cursor, still_needed) = match state {
+                FragmentSampleState::Locate {
+                    dataset,
+                    column,
+                    projection,
+                    scan_fragments,
+                    sample_size_hint,
+                    still_needed,
+                } => {
+                    if still_needed.load(Ordering::Relaxed) == 0 {
+                        return Ok(None);
                     }
+                    let row_addrs = sample_non_null_row_addresses(
+                        &dataset,
+                        &column,
+                        sample_size_hint,
+                        scan_fragments,
+                    )
+                    .await?;
+                    (dataset, projection, row_addrs, 0, still_needed)
                 }
-                sampled_offsets
+                FragmentSampleState::Take {
+                    dataset,
+                    projection,
+                    row_addrs,
+                    cursor,
+                    still_needed,
+                } => (dataset, projection, row_addrs, cursor, still_needed),
             };
-            if sampled_offsets.is_empty() {
+
+            if cursor >= row_addrs.len() || still_needed.load(Ordering::Relaxed) == 0 {
                 return Ok(None);
             }
-            sampled_offsets.sort_unstable();
-
-            let mut row_addrs =
-                row_offsets_to_row_addresses(&selected_fragments, &sampled_offsets).await?;
-            row_addrs.sort_unstable();
-
+            let end = (cursor + TAKE_CHUNK_SIZE).min(row_addrs.len());
             let batch = TakeBuilder::try_new_from_addresses(
                 dataset.clone(),
-                row_addrs,
+                row_addrs[cursor..end].to_vec(),
                 projection.clone(),
             )?
             .execute()
             .await?;
             Ok(Some((
                 batch,
-                (
+                FragmentSampleState::Take {
                     dataset,
                     projection,
-                    selected_fragments,
-                    seen_offsets,
-                    rng,
+                    row_addrs,
+                    cursor: end,
                     still_needed,
-                ),
+                },
             )))
         },
     );
     Ok(Box::pin(stream))
+}
+
+/// Run a validity-only pre-pass over the selected fragments and return a
+/// uniform random sample of at most `sample_size_hint` non-null row addresses.
+///
+/// The scan filters on `column IS NOT NULL` but projects only the `_rowaddr`
+/// meta column, so no vector bytes are materialized while locating non-null
+/// rows. Reservoir sampling (Algorithm R) keeps the retained set bounded to
+/// `sample_size_hint` regardless of how many non-null rows the column has.
+async fn sample_non_null_row_addresses(
+    dataset: &Dataset,
+    column: &str,
+    sample_size_hint: usize,
+    scan_fragments: Vec<lance_table::format::Fragment>,
+) -> Result<Vec<u64>> {
+    let mut scanner = dataset.scan();
+    scanner.with_fragments(scan_fragments);
+    scanner.empty_project()?;
+    scanner.with_row_address();
+    let column_expr = lance_datafusion::logical_expr::field_path_to_expr(column)?;
+    scanner.filter_expr(column_expr.is_not_null());
+
+    let mut stream = scanner.try_into_stream().await?;
+    let mut reservoir: Vec<u64> = Vec::new();
+    let mut seen: u64 = 0;
+    let mut rng = SmallRng::from_os_rng();
+    while let Some(batch) = stream.next().await {
+        let batch = batch?;
+        let row_addrs = batch
+            .column_by_name(ROW_ADDR)
+            .ok_or_else(|| {
+                Error::internal(
+                    "Sample training data: validity pre-pass did not return row addresses"
+                        .to_string(),
+                )
+            })?
+            .as_primitive::<UInt64Type>();
+        for &addr in row_addrs.values().iter() {
+            if reservoir.len() < sample_size_hint {
+                reservoir.push(addr);
+            } else if sample_size_hint > 0 {
+                // Algorithm R: replace a random slot with probability
+                // sample_size_hint / (seen + 1).
+                let candidate = rng.random_range(0..=seen) as usize;
+                if candidate < sample_size_hint {
+                    reservoir[candidate] = addr;
+                }
+            }
+            seen += 1;
+        }
+    }
+    // Sorted addresses let `take` read fragments front-to-back.
+    reservoir.sort_unstable();
+    info!(
+        "Sample training data: validity pre-pass located {} non-null rows, sampled {} for column {}",
+        seen,
+        reservoir.len(),
+        column
+    );
+    Ok(reservoir)
 }
 
 fn resolve_scan_fragments(
@@ -874,7 +939,6 @@ async fn sample_fsl_uniform(
     let mut values_buf = MutableBuffer::with_capacity(sample_size_hint * byte_width);
     let mut total_rows: usize = 0;
 
-    const TAKE_CHUNK_SIZE: usize = 8192;
     let total_chunks = indices.len().div_ceil(TAKE_CHUNK_SIZE);
     for (chunk_idx, chunk) in indices.chunks(TAKE_CHUNK_SIZE).enumerate() {
         let batch = dataset.take(chunk, projection.clone()).await?;
@@ -1502,15 +1566,15 @@ mod tests {
         }
     }
 
-    /// Scan-side regression: each fragment-limited producer round must read at
-    /// most the consumer's outstanding demand. Driving the producer directly
-    /// with a fixed `still_needed` and inspecting the raw batch size catches
-    /// over-reads that a post-truncation output-length check cannot.
+    /// Scan-side regression: the validity pre-pass must `take` only non-null
+    /// rows and never emit more than the requested sample. Driving the producer
+    /// directly and inspecting every batch catches both a pre-pass that leaks
+    /// null rows and one that over-reads past the sample size.
     #[tokio::test]
-    async fn test_sample_fragment_scan_round_caps_at_still_needed() {
+    async fn test_sample_fragment_scan_takes_only_non_null_rows() {
         let nrows: usize = 4000;
         let dims: u32 = 8;
-        let still: usize = 500;
+        let sample_size: usize = 500;
 
         let col_gen = array::rand_vec::<Float32Type>(Dimension::from(dims)).with_random_nulls(0.5);
         let data = gen_batch()
@@ -1518,7 +1582,7 @@ mod tests {
             .into_batch_rows(RowCount::from(nrows as u64))
             .unwrap();
 
-        let dataset = InsertBuilder::new("memory://fsl_scan_round_cap_test")
+        let dataset = InsertBuilder::new("memory://fsl_scan_non_null_test")
             .execute(vec![data])
             .await
             .unwrap();
@@ -1528,26 +1592,76 @@ mod tests {
             .iter()
             .map(|f| f.id() as u32)
             .collect();
-        let num_rows = count_rows(&dataset, Some(&fragment_ids)).await.unwrap();
 
-        // `still_needed` is left large enough that `num_rows` never bounds the
-        // round, so the batch size reflects the demand cap and nothing else.
-        let still_needed = Arc::new(AtomicUsize::new(still));
+        // The consumer's demand never drops to zero here, so the stream runs to
+        // exhaustion and total output reflects the sample cap alone.
+        let still_needed = Arc::new(AtomicUsize::new(sample_size));
         let mut scan = sample_training_data_scan_from_fragments(
             &dataset,
             "vec",
-            num_rows,
+            sample_size,
             &fragment_ids,
             still_needed.clone(),
         )
         .unwrap();
 
-        let batch = scan.next().await.unwrap().unwrap();
+        let mut total_rows = 0;
+        while let Some(batch) = scan.next().await {
+            let batch = batch.unwrap();
+            let array = get_column_from_batch(&batch, "vec").unwrap();
+            assert_eq!(
+                array.logical_null_count(),
+                0,
+                "validity pre-pass took a null row"
+            );
+            total_rows += batch.num_rows();
+        }
         assert!(
-            batch.num_rows() <= still,
-            "producer round read {} rows but only {} were outstanding",
-            batch.num_rows(),
-            still
+            total_rows <= sample_size,
+            "pre-pass took {total_rows} rows but only {sample_size} were requested"
+        );
+        // With ~2000 non-null rows available, the sample must fill completely.
+        assert_eq!(total_rows, sample_size);
+    }
+
+    /// An all-null column must terminate the fragment-limited stream without a
+    /// single `take`: the validity pre-pass finds no non-null rows.
+    #[tokio::test]
+    async fn test_sample_fragment_scan_all_null_emits_nothing() {
+        let nrows: usize = 2000;
+        let dims: u32 = 8;
+        let sample_size: usize = 500;
+
+        let col_gen = array::rand_vec::<Float32Type>(Dimension::from(dims)).with_random_nulls(1.0);
+        let data = gen_batch()
+            .col("vec", col_gen)
+            .into_batch_rows(RowCount::from(nrows as u64))
+            .unwrap();
+
+        let dataset = InsertBuilder::new("memory://fsl_scan_all_null_test")
+            .execute(vec![data])
+            .await
+            .unwrap();
+
+        let fragment_ids: Vec<u32> = dataset
+            .get_fragments()
+            .iter()
+            .map(|f| f.id() as u32)
+            .collect();
+
+        let still_needed = Arc::new(AtomicUsize::new(sample_size));
+        let mut scan = sample_training_data_scan_from_fragments(
+            &dataset,
+            "vec",
+            sample_size,
+            &fragment_ids,
+            still_needed,
+        )
+        .unwrap();
+
+        assert!(
+            scan.next().await.is_none(),
+            "all-null column should yield no take batches"
         );
     }
 
@@ -1595,5 +1709,90 @@ mod tests {
 
         assert_eq!(num_rows, max_rows);
         assert_eq!(buf.len(), max_rows * byte_width);
+    }
+
+    /// Build a nullable FSL dataset with one fragment per `(total_rows,
+    /// non_null_indices)` entry, controlling exactly which rows are non-null.
+    async fn make_sparse_nullable_fsl_dataset(
+        dim: usize,
+        fragments: &[(usize, Vec<usize>)],
+    ) -> Dataset {
+        use arrow_array::{RecordBatch, RecordBatchIterator};
+        use arrow_schema::Schema as ArrowSchema;
+
+        let item_field = Arc::new(Field::new("item", DataType::Float32, true));
+        let list_type = DataType::FixedSizeList(item_field.clone(), dim as i32);
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new("vec", list_type, true)]));
+
+        let make_batch = |total: usize, non_null: &[usize]| -> RecordBatch {
+            let values = Float32Array::from_iter_values((0..total * dim).map(|i| i as f32));
+            let mut nulls_builder = BooleanBufferBuilder::new(total);
+            for i in 0..total {
+                nulls_builder.append(non_null.contains(&i));
+            }
+            let nulls = NullBuffer::new(nulls_builder.finish());
+            let fsl = FixedSizeListArray::try_new(
+                item_field.clone(),
+                dim as i32,
+                Arc::new(values),
+                Some(nulls),
+            )
+            .unwrap();
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(fsl)]).unwrap()
+        };
+
+        let (first_total, first_non_null) = &fragments[0];
+        let mut dataset = InsertBuilder::new("memory://sparse_nullable_fsl")
+            .execute(vec![make_batch(*first_total, first_non_null)])
+            .await
+            .unwrap();
+        for (total, non_null) in &fragments[1..] {
+            dataset
+                .append(
+                    RecordBatchIterator::new(
+                        vec![Ok(make_batch(*total, non_null))],
+                        schema.clone(),
+                    ),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        dataset
+    }
+
+    /// The issue's core scenario: an extremely sparse nullable column spread
+    /// across multiple fragments (one entirely null). The sampler must return
+    /// every non-null row — no more, no fewer — even though far fewer non-null
+    /// rows exist than the requested sample size.
+    #[tokio::test]
+    async fn test_maybe_sample_training_data_fsl_sparse_multi_fragment() {
+        let dim = 8usize;
+        let sample_size = 100usize;
+        let dataset = make_sparse_nullable_fsl_dataset(
+            dim,
+            &[
+                (3000, vec![10, 1500, 2999]),
+                (3000, vec![]),
+                (3000, vec![0, 42]),
+            ],
+        )
+        .await;
+        assert_eq!(dataset.get_fragments().len(), 3);
+
+        let fragment_ids: Vec<u32> = dataset
+            .get_fragments()
+            .iter()
+            .map(|f| f.id() as u32)
+            .collect();
+
+        let training_data =
+            maybe_sample_training_data(&dataset, "vec", sample_size, Some(&fragment_ids))
+                .await
+                .unwrap();
+
+        assert_eq!(training_data.len(), 5);
+        assert_eq!(training_data.null_count(), 0);
+        assert_eq!(training_data.value_length(), dim as i32);
     }
 }
