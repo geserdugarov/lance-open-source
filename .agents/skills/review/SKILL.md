@@ -47,14 +47,24 @@ No bugfix or feature merges without tests. Verify:
 - Vector index tests assert recall (`>= 0.5`), not just successful creation.
 - Backwards-compat changes read checked-in `test_data/` via `copy_test_data_to_tmp` with a version-asserting `datagen.py`.
 - A skipped test links a tracking issue — reject a bare `#[ignore]` / `@pytest.mark.skip` / `@Ignore`.
+- Also review test economy and assertion quality:
+  - Identify newly added tests that duplicate existing tests or each other; request merging into cases/loops when the only difference is fixture values, null density, or branch selection.
+  - Verify each added test fails against the old behavior or directly protects a changed contract.
+  - For resource-usage fixes, reject tests that only assert final output size if the bug was over-read, over-retention, or temporary buffer growth; require at least one assertion at the producer/helper level.
+  - Prefer fewer tests with clear distinct coverage over many narrowly overlapping regression tests.
 
 ## Documentation drift
 
 After a symbol or behavior move, grep the PR for stale pointers and require updates to the relevant `AGENTS.md` (root + touched directory; `CLAUDE.md` is a symlink), the affected public doc comments/examples, and `docs/src/format/` + `protos/` whenever the format or messages change. Treat blanket claims ("every helper is re-exported") with suspicion — verify them literally against the code.
 
+## Comment hygiene
+
+- Flag diff-relative comments — "previously", "the old `2 * hint` over-fetch", "instead of a hash set", "now uses" — in code and test docs alike. A comment must read correctly to someone who never saw the change; the before/after story belongs in the commit message or PR description.
+- Flag comments that paraphrase an already-readable line or the assert below them instead of stating a why (invariant, non-local consumer, prevented failure). Ask for the reason or for deletion. Do not flag plain-language summaries above genuinely dense code (bit arithmetic, unsafe byte-offset math, multi-step iterator chains) — a comment that is faster to understand than the code it heads earns its place.
+
 ## Commit hygiene
 
-- Conventional Commits: `<type>(<optional scope>): <subject>`, type one of `feat`, `fix`, `docs`, `perf`, `ci`, `test`, `build`, `style`, `chore`. Reject a non-imperative or mis-typed subject.
+- Conventional Commits: `<type>(<optional scope>): <subject>`, type one of `feat`, `fix`, `docs`, `perf`, `ci`, `test`, `build`, `style`, `chore`. Reject a non-imperative or mistyped subject.
 
 ## Rust gotchas
 

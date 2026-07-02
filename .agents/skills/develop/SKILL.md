@@ -69,6 +69,22 @@ We do not merge code without tests. For every bugfix and feature:
 - Vector index tests must assert recall (`>= 0.5`), not just that creation succeeded.
 - For backwards compatibility, read checked-in datasets from `test_data/` via `copy_test_data_to_tmp`, with a `datagen.py` that asserts the Lance version used.
 - In Rust tests prefer the ergonomic helpers: `record_batch!()`, `gen_batch()` (`.col()`, `.into_reader_rows()`), `.try_into_batch()`, plain `"memory://"` URIs, and `batch["col"]` access. Assert on both the error variant and the message content.
+- Before finalizing tests, do a redundancy pass:
+  - List each added/modified test and the distinct behavior it protects.
+  - Merge tests that differ only by input shape, null density, or branch case into `rstest` cases or a small named loop, unless separate setup materially improves clarity.
+  - Prefer one focused helper/unit test that covers sibling branches over multiple tests with repeated setup.
+  - Keep end-to-end tests only when they exercise an integration boundary that helper tests cannot cover.
+  - Ensure assertions observe the behavior being fixed. For memory, prefetch, streaming, or buffering bugs, add a direct producer/helper assertion when output-length checks could pass after post-processing/truncation.
+  - Remove incidental unsafe/manual byte assertions when existing tests already cover byte correctness.
+
+## Comments
+
+Write every comment against the current state of the code, as if it had always been this way:
+
+- Prefer stating why the code below exists — the invariant it protects, the non-local consumer it serves, the failure it prevents — over describing what it does. If a comment paraphrases an already-readable line (`// cap the copy at what we still need` above `.min(remaining_rows)`) or the assert below it, delete it or replace it with the reason.
+- Exception: a plain-language summary of genuinely dense code (bit arithmetic, unsafe byte-offset math, a multi-step iterator chain) is fine even though it "restates" the code. The test is whether the comment is faster to understand than the code below it, not whether it repeats it.
+- No diff-relative wording: "previously", "the old X", "instead of a `HashSet`", "no longer", "now sized to". Those sentences address the reviewer and go stale the moment the PR merges — put the before/after story in the commit message or PR description instead.
+- Same rule for test doc comments: describe the behavior the test pins down, not the bug or implementation it replaced.
 
 ## Documentation drift
 
