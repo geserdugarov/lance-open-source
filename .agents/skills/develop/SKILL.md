@@ -1,6 +1,6 @@
 ---
 name: develop
-description: Project conventions and recurring gotchas for implementer agents working on Lance (a Rust workspace with Python/Java bindings), plus Rust-specific LLM gotchas. Use before opening a PR for any change under rust/, python/, java/, protos/, or docs/.
+description: Project conventions and recurring gotchas for implementer agents working on Lance (a Rust workspace with Python/Java bindings), plus Rust-specific LLM gotchas. Use before committing any change under rust/, python/, java/, protos/, or docs/.
 ---
 
 # Developer skill — Lance
