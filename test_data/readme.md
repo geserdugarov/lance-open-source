@@ -31,3 +31,8 @@ folder contains a `datagen.py` script that generates one or more lance datasets.
   metadata in the schema metadata in the index file. We switched to storing them
   in a global buffer in https://github.com/lancedb/lance/pull/3829, but still
   need to be able to read the old format.
+* `0.13.0/legacy_hnsw_sq`: This dataset has an `IVF_HNSW_SQ` vector index written
+  in the legacy self-described format (index file version 0.2). `0.13.0` is the
+  newest release that wrote this format; `0.14.0` switched the default to the v3
+  format. Readers must still be able to open it through the legacy IVF_HNSW_SQ
+  loader, which reads both `index.idx` and `auxiliary.idx`.

@@ -4544,7 +4544,7 @@ mod tests {
     use std::iter::repeat_n;
     use std::ops::Range;
 
-    use arrow_array::types::UInt64Type;
+    use arrow_array::types::{Int32Type, UInt64Type};
     use arrow_array::{
         FixedSizeListArray, Float16Array, Float32Array, RecordBatch, RecordBatchIterator,
         RecordBatchReader, UInt64Array, make_array,
@@ -6441,6 +6441,85 @@ mod tests {
         dataset.prewarm_index("my_idx").await.unwrap();
         let stats = dataset.object_store.as_ref().io_stats_incremental();
         assert_io_eq!(stats, read_iops, 0, "second prewarm should not perform IO");
+    }
+
+    #[tokio::test]
+    async fn test_legacy_ivf_hnsw_sq_backwards_compat() {
+        // pylance 0.13.0 is the newest release that wrote IVF_HNSW_SQ indices in
+        // the legacy self-described format (index file version 0.2). Current Lance
+        // can no longer create that format but must still read it through the
+        // legacy v1 IVF_HNSW_SQ loader, which relies on both `index.idx` and
+        // `auxiliary.idx` under `_indices/<uuid>/`.
+        let test_dir = copy_test_data_to_tmp("0.13.0/legacy_hnsw_sq").unwrap();
+        let test_uri = test_dir.path_str();
+        let test_uri = &test_uri;
+
+        let dataset = Dataset::open(test_uri).await.unwrap();
+
+        // The fixture spans multiple fragments and carries both files the loader reads.
+        assert!(
+            dataset.get_fragments().len() >= 2,
+            "fixture should have multiple fragments"
+        );
+        let indices = dataset.load_indices().await.unwrap();
+        assert_eq!(indices.len(), 1);
+        let index_dir = dataset.indices_dir().join(indices[0].uuid.to_string());
+        for file in [INDEX_FILE_NAME, INDEX_AUXILIARY_FILE_NAME] {
+            let path = index_dir.clone().join(file);
+            assert!(
+                dataset.object_store.exists(&path).await.unwrap(),
+                "legacy IVF_HNSW_SQ index missing {file}"
+            );
+        }
+
+        // Load every vector so we can compute exact nearest neighbors as ground truth.
+        let batch = dataset
+            .scan()
+            .project(&["id", "vec"])
+            .unwrap()
+            .try_into_batch()
+            .await
+            .unwrap();
+        let ids = batch["id"].as_primitive::<Int32Type>();
+        let vectors = batch["vec"].as_fixed_size_list();
+        let dim = vectors.value_length() as usize;
+        let flat = vectors.values().as_primitive::<Float32Type>().values();
+        let num_rows = vectors.len();
+
+        // Use a handful of stored vectors as queries and measure recall against the
+        // exact neighbors. Search every partition so IVF routing is not the bottleneck.
+        let k = 10;
+        let num_queries = 20;
+        let mut total_recall = 0.0_f32;
+        for q in 0..num_queries {
+            let query = &flat[q * dim..(q + 1) * dim];
+            let distances = l2_distance_batch(query, flat, dim).collect::<Vec<_>>();
+            let mut order = (0..num_rows).collect::<Vec<_>>();
+            order.sort_by(|&a, &b| distances[a].partial_cmp(&distances[b]).unwrap());
+            let expected: HashSet<i32> = order[..k].iter().map(|&i| ids.value(i)).collect();
+
+            let query_array = Float32Array::from(query.to_vec());
+            let result = dataset
+                .scan()
+                .nearest("vec", &query_array, k)
+                .unwrap()
+                .minimum_nprobes(2)
+                .project(&["id"])
+                .unwrap()
+                .try_into_batch()
+                .await
+                .unwrap();
+            let found = result["id"].as_primitive::<Int32Type>();
+            let hits = (0..found.len())
+                .filter(|&i| expected.contains(&found.value(i)))
+                .count();
+            total_recall += hits as f32 / k as f32;
+        }
+        let recall = total_recall / num_queries as f32;
+        assert!(
+            recall >= 0.5,
+            "legacy IVF_HNSW_SQ recall {recall} below 0.5 threshold"
+        );
     }
 
     #[tokio::test]
