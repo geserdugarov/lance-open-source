@@ -6133,6 +6133,68 @@ mod tests {
         );
     }
 
+    /// The legacy IVF_HNSW_PQ builder stages each partition in a scratch
+    /// directory under the OS temp dir and must remove it once the build
+    /// finishes; otherwise every build leaks one directory.
+    ///
+    /// The OS temp dir is process-global and shared with other concurrently
+    /// running tests, so the build runs in a child process with `TMPDIR` pointed
+    /// at an isolated directory. After the child exits we assert that no `.tmp*`
+    /// scratch directory survives there.
+    #[test]
+    fn test_ivf_hnsw_pq_build_cleans_scratch_dir() {
+        let isolated_tmp = TempStrDir::default();
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "index::vector::ivf::tests::build_ivf_hnsw_pq_in_isolated_tmp",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("TMPDIR", isolated_tmp.as_str())
+            .status()
+            .expect("failed to spawn child test process");
+        assert!(status.success(), "child IVF_HNSW_PQ build failed");
+
+        let leaked = std::fs::read_dir(isolated_tmp.as_str())
+            .expect("read isolated temp dir")
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".tmp"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            leaked.is_empty(),
+            "legacy IVF_HNSW_PQ build leaked scratch directories under TMPDIR: {:?}",
+            leaked,
+        );
+    }
+
+    /// Child-process body for [`test_ivf_hnsw_pq_build_cleans_scratch_dir`]. It
+    /// runs the legacy public builder once against a `memory://` dataset so the
+    /// builder's scratch directory is the only on-disk temporary created.
+    #[tokio::test]
+    #[ignore = "spawned as a child process by test_ivf_hnsw_pq_build_cleans_scratch_dir"]
+    async fn build_ivf_hnsw_pq_in_isolated_tmp() {
+        let (dataset, _) = generate_test_dataset("memory://", 0.0..1.0).await;
+
+        build_ivf_hnsw_pq_index(
+            &dataset,
+            "vector",
+            "idx",
+            Uuid::new_v4(),
+            MetricType::L2,
+            &IvfBuildParams::new(4),
+            &HnswBuildParams::default(),
+            &PQBuildParams::new(4, 8),
+        )
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn test_create_ivf_hnsw_with_empty_partition() {
         let test_dir = TempStrDir::default();
