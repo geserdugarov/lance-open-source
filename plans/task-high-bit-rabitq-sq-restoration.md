@@ -10,93 +10,24 @@ Terminology note:
 
 - `RaBitQ` is the human-facing name for Lance's `IVF_RQ`; current Rust symbols and modules still use the `Rabit*` spelling, implemented under `rust/lance-index/src/vector/bq*`.
 - `SQ` means scalar quantization / `ScalarQuantizer`, implemented under `rust/lance-index/src/vector/sq*`.
+- `OBS` means object storage in the product task wording.
 
-## Working interpretation
+## Goal and stage order
 
-This task is about vector-search recall in the cache/refine path:
+The goal is a cache-aware precision restoration path for vector search:
 
-1. A coarse ANN stage can use low-cost quantized data, often on object storage.
-2. A "global refine" stage overfetches candidates and re-ranks them.
-3. Instead of always reading raw vectors from the base table, the cache path should be able to restore precision by re-scoring candidates with a higher-bit quantized representation that is already cached, such as high-bit RaBitQ or SQ.
-4. Exact raw-vector refine should remain available when users request exact re-rank, but the cache-oriented path should have a middle tier that is much cheaper than base-table `take()`.
+1. Search cheaply over coarse or low-precision ANN data.
+2. Overfetch candidates.
+3. Re-score candidates with a higher-precision cached representation, such as high-bit `IVF_RQ` or SQ.
+4. Optionally run exact raw-vector refine when the user requests exact re-ranking.
 
-In short: provide a high-precision cached re-score/refine tier for ANN candidates, using high-bit RaBitQ and/or true high-bit SQ, and make sure the bit width survives build, merge, cache serialization, prewarm, query, and binding APIs.
+The implementation should be staged because each task depends on the previous one:
 
-## Current state found in the repo
+1. `Index Enhancement / RaBitQ Enhancement`: make high-bit `IVF_RQ`, especially 4-bit and 8-bit, a hardened and documented index capability.
+2. `Cache / Global Refine`: define and implement the cache-resident precision restoration tier.
+3. `Cache / Hierarchical index`: compose object-storage ANN filtering and cached SQ refinement into a multi-precision query path.
 
-### Refine path
-
-`Scanner::refine(factor)` is documented as reading extra candidates and re-ranking with original vector values. The indexed search planner overfetches `k * refine_factor`, then performs a `take()` of the vector column and runs flat KNN over the raw vectors.
-
-Relevant files:
-
-- `rust/lance/src/dataset/scanner.rs`
-- `rust/lance/src/io/exec/knn.rs`
-- `plans/docs/03-index-on-disk-and-search.md`
-
-This is exact, but it costs base-table random reads. The plan's `Cache / Global Refine` label suggests a cache-resident alternative or complement.
-
-### RaBitQ / IVF_RQ
-
-Current code already has substantial high-bit RaBitQ support:
-
-- `RQBuildParams` carries `num_bits`.
-- `validate_rq_num_bits` accepts `1..=9`.
-- `num_bits > 1` stores extra ex-code columns in addition to the sign-bit binary codes.
-- Raw-query search, `ApproxMode::{Fast, Normal, Accurate}`, ex-code re-ranking, lower-bound pruning, and cache/prewarm code paths exist.
-- There are end-to-end tests building and searching multi-bit `IVF_RQ` with `num_bits` values such as 4, 6, and 9.
-
-Relevant files:
-
-- `rust/lance-index/src/vector/bq.rs`
-- `rust/lance-index/src/vector/bq/builder.rs`
-- `rust/lance-index/src/vector/bq/storage.rs`
-- `rust/lance/src/index/vector/ivf/v2.rs`
-- `rust/lance/src/index/vector/ivf/partition_serde.rs`
-
-This means the old row-15 wording ("4-bit and 8-bit RaBitQ are not available") is at least partly stale for the current tree. The remaining work is likely integration hardening: ensure high-bit RQ is actually used for precision restoration in cached/global refine scenarios, not just build/search unit coverage.
-
-### SQ
-
-SQ has an exposed `num_bits` field in metadata and build params, but the actual storage and distance implementation are still effectively SQ8:
-
-- `SQBuildParams.num_bits` is a `u16`.
-- `ScalarQuantizationMetadata.num_bits` is persisted.
-- `ScalarQuantizer::transform` always calls `scale_to_u8`.
-- `scale_to_u8` maps values into `0..=255`.
-- SQ storage is `FixedSizeList<UInt8>`.
-- SQ distance uses `l2_u8` / `dot_u8` and scales by 255-derived bounds.
-- The Python docs say SQ supports only 8 bits.
-- Python's generic `num_bits` kwarg currently updates PQ/RQ params, not SQ params.
-- Java exposes SQ `numBits`, including tests that pass non-default values, but Rust SQ does not appear to implement true non-8-bit storage.
-
-Relevant files:
-
-- `rust/lance-index/src/vector/sq.rs`
-- `rust/lance-index/src/vector/sq/builder.rs`
-- `rust/lance-index/src/vector/sq/storage.rs`
-- `python/src/dataset.rs`
-- `python/python/lance/dataset.py`
-- `java/src/main/java/org/lance/index/vector/SQBuildParams.java`
-- `java/lance-jni/src/utils.rs`
-
-This task should either implement true high-bit SQ, probably at least `UInt16` for 16-bit, or reject/document non-8-bit SQ clearly. Silently accepting `num_bits != 8` while producing SQ8 codes is a precision bug and API trap.
-
-### Cache-specific considerations
-
-The index cache can serialize partition entries for SQ and RaBitQ:
-
-- SQ cache headers preserve `num_bits`, `dim`, distance type, and bounds.
-- RaBitQ cache headers preserve `num_bits`, `code_dim`, rotation type, query estimator, and fast-rotation signs.
-- RaBitQ has a runtime search cache for rotated centroids in raw-query mode.
-- Cache codec versions are explicit. Any storage layout change, especially true high-bit SQ, needs versioning and backward compatibility.
-
-Relevant files:
-
-- `rust/lance/src/session.rs`
-- `rust/lance/src/index/vector/ivf/partition_serde.rs`
-- `rust/lance/src/index/vector/ivf/v2.rs`
-- `rust/lance/src/dataset/tests/dataset_index.rs`
+Status below was copied from the local repository audit and the public upstream status note already in this plan, checked against `lance-format/lance` on 2026-07-08. Local experimental branches may contain additional work that has not landed upstream.
 
 ## Open-source status and roadmap
 
@@ -135,203 +66,169 @@ closed-unmerged historical PRs are marked `not released`.
 | [`#7640`](https://github.com/lance-format/lance/pull/7640) | `future 9.0` | open; shared IVF partition scans for batch queries |
 | [`#7077`](https://github.com/lance-format/lance/pull/7077) | not released | closed unmerged; historical context only; superseded by merged multi-bit `IVF_RQ` work |
 
-### Done upstream
+Roadmap mapping:
 
-- Base RaBitQ support exists: [`#4344`](https://github.com/lance-format/lance/pull/4344)
-  added RabitQ quantization and [`#4913`](https://github.com/lance-format/lance/pull/4913)
-  documented it in the vector index spec.
-- Distributed and binding support has moved forward:
-  [`#5648`](https://github.com/lance-format/lance/pull/5648) added Java
-  `IVF_RQ` creation, [`#6359`](https://github.com/lance-format/lance/pull/6359)
-  added distributed `IVF_RQ` segment builds, and
-  [`#7014`](https://github.com/lance-format/lance/pull/7014) added shared
-  RaBitQ rotation for distributed Python builds.
-- Multi-bit RaBitQ storage landed in
-  [`#7038`](https://github.com/lance-format/lance/pull/7038), with storage
-  preparation for `num_bits=2..9` using split sign-bit and ex-code storage.
-- Raw-query search and the current public accuracy knob landed in
-  [`#7078`](https://github.com/lance-format/lance/pull/7078) and
-  [`#7179`](https://github.com/lance-format/lance/pull/7179). These added
-  raw-query `IVF_RQ` search metadata and public `approx_mode={fast,normal,accurate}`
-  through Rust scanner, ANN proto serialization, Python query parsing, and
-  distance-calculator options.
-- RaBitQ high-bit performance work landed in
-  [`#7205`](https://github.com/lance-format/lance/pull/7205),
-  [`#7241`](https://github.com/lance-format/lance/pull/7241), and
-  [`#7243`](https://github.com/lance-format/lance/pull/7243), covering ex-code
-  reranking SIMD kernels, distance-table quantization, and lower-bound pruning.
-- Cache serialization was stabilized by
-  [`#7163`](https://github.com/lance-format/lance/pull/7163), which added a
-  versioned cache-codec envelope for restart-surviving and backend-independent
-  cache entries.
-- Important maintenance fixes landed:
-  [`#7217`](https://github.com/lance-format/lance/pull/7217) fixed `IVF_RQ`
-  fragment-reuse remap behavior, and
-  [`#7315`](https://github.com/lance-format/lance/pull/7315) fixed PQ storage
-  row IDs after fragment-reuse remap.
-- SQ dot-product correctness improved in
-  [`#7481`](https://github.com/lance-format/lance/pull/7481), which accounts
-  for SQ affine offsets when the quantization lower bound is non-zero.
+- Stage 1 is mostly merged upstream for storage and query mechanics, but still needs public contract cleanup, 4-bit and 8-bit hardening, and recall/performance closure around [`#7157`](https://github.com/lance-format/lance/issues/7157) and [`#7276`](https://github.com/lance-format/lance/issues/7276).
+- Stage 2 is only partially in place. The cache-codec foundation exists, but the cache/global-refine API and SQ bit-width contract still need implementation decisions.
+- Stage 3 is design-stage work. Covering-index and multi-segment work are adjacent foundations, but there is not yet a defined hierarchical query planner for `OBS PQ/RaBitQ -> cached SQ -> optional exact refine`.
 
-### In progress or adjacent upstream work
+## Stage 1: Index Enhancement / RaBitQ Enhancement
 
-- [`#7355`](https://github.com/lance-format/lance/pull/7355) is still open and
-  also targets SQ dot distance by computing from dequantized values. It should
-  be reconciled with merged [`#7481`](https://github.com/lance-format/lance/pull/7481)
-  and the still-open recall report
-  [`#7352`](https://github.com/lance-format/lance/issues/7352).
-- [`#7566`](https://github.com/lance-format/lance/pull/7566) is an open draft
-  that implements
-  covering/included columns for `IVF_PQ` vector search. It is not high-bit
-  precision restoration, but it is relevant because it avoids base-table
-  `TakeExec` I/O for covered vector-search projections.
-- [`#7440`](https://github.com/lance-format/lance/pull/7440) exposes vector
-  index handle readers and relates to the public reader API request in
-  [`#7319`](https://github.com/lance-format/lance/issues/7319).
-- [`#7640`](https://github.com/lance-format/lance/pull/7640) shares IVF
-  partition scans across batch vector queries. This is query-path performance
-  work, not precision restoration, but it may interact with cached/prepared
-  partition search.
-- Multi-segment vector index work is active around
-  [`#6309`](https://github.com/lance-format/lance/issues/6309) and discussion
-  [`#6189`](https://github.com/lance-format/lance/discussions/6189). The
-  discussion explicitly covers `IVF_FLAT`, `IVF_PQ`, and `IVF_SQ` first, while
-  `IVF_RQ` is called out as a separate evolution path.
-- Discussion [`#7575`](https://github.com/lance-format/lance/discussions/7575)
-  proposes pluggable cache backends across Rust, Python, and Java. It is
-  directly relevant to any long-lived cache-resident precision-restoration tier.
-- Discussion [`#6909`](https://github.com/lance-format/lance/discussions/6909)
-  proposes covering index columns for vector search, the design basis for
-  open draft PR [`#7566`](https://github.com/lance-format/lance/pull/7566).
-- Discussion [`#6408`](https://github.com/lance-format/lance/discussions/6408)
-  raises TurboQuant as a future quantization direction and compares 4-bit
-  quantization build time against PQ and RabitQ. This is exploratory and should
-  not block this task.
+Make high-bit `IVF_RQ` a real, tested, public capability. This stage is about the index itself, before treating it as a cache/global-refine building block.
 
-### Open issues and risks to track
+Relevant local files:
 
-- [`#4319`](https://github.com/lance-format/lance/issues/4319), the original
-  RabitQ tracker, is still open and its checklist is stale relative to the
-  merged June 2026 work. It should be updated or split into current follow-ups.
-- [`#7157`](https://github.com/lance-format/lance/issues/7157) reports
-  `IVF_RQ` retrieval quality degradation as embedding dimension grows. This is
-  directly relevant to any claim that high-bit RaBitQ restores precision.
-- [`#7276`](https://github.com/lance-format/lance/issues/7276) tracks a 4-bit
-  distance-table performance regression. High-bit precision restoration must not
-  trade base-table I/O for an avoidable hot-loop regression.
-- [`#7352`](https://github.com/lance-format/lance/issues/7352) tracks low
-  recall for `IVF_SQ` / `IVF_HNSW_SQ` with dot distance. Merged
-  [`#7481`](https://github.com/lance-format/lance/pull/7481) addresses one
-  root cause, but the issue remains open and should be verified on the reported
-  benchmark.
-- [`#7201`](https://github.com/lance-format/lance/issues/7201) asked for
-  vector-index I/O metrics and is closed. The precision-restoration work should
-  still include metrics/assertions proving that a warm-cache path avoids
-  base-table vector reads when that is the intended behavior.
+- `rust/lance-index/src/vector/bq.rs`
+- `rust/lance-index/src/vector/bq/builder.rs`
+- `rust/lance-index/src/vector/bq/storage.rs`
+- `rust/lance/src/index/vector/ivf/v2.rs`
+- `rust/lance/src/index/vector/ivf/partition_serde.rs`
+
+### Done
+
+- Base RaBitQ support landed in [`#4344`](https://github.com/lance-format/lance/pull/4344), with vector-index spec documentation in [`#4913`](https://github.com/lance-format/lance/pull/4913).
+- Java `IVF_RQ` creation landed in [`#5648`](https://github.com/lance-format/lance/pull/5648), distributed `IVF_RQ` segment builds landed in [`#6359`](https://github.com/lance-format/lance/pull/6359), and shared RaBitQ rotation for distributed Python builds landed in [`#7014`](https://github.com/lance-format/lance/pull/7014).
+- Multi-bit `IVF_RQ` storage landed in [`#7038`](https://github.com/lance-format/lance/pull/7038). The current Rust code carries `RQBuildParams::num_bits`, validates `1..=9`, and stores extra ex-code columns when `num_bits > 1`.
+- Raw-query `IVF_RQ` search and the public accuracy knob landed in [`#7078`](https://github.com/lance-format/lance/pull/7078) and [`#7179`](https://github.com/lance-format/lance/pull/7179), including `ApproxMode::{Fast, Normal, Accurate}`.
+- RaBitQ high-bit performance work landed in [`#7205`](https://github.com/lance-format/lance/pull/7205), [`#7241`](https://github.com/lance-format/lance/pull/7241), and [`#7243`](https://github.com/lance-format/lance/pull/7243), covering ex-code reranking SIMD kernels, distance-table quantization, and lower-bound pruning.
+- `IVF_RQ` fragment-reuse remap behavior was fixed in [`#7217`](https://github.com/lance-format/lance/pull/7217).
+- Existing end-to-end tests build and search multi-bit `IVF_RQ` values such as `num_bits=4`, `num_bits=6`, and `num_bits=9`.
+
+### In progress
+
+- The original RaBitQ tracker, [`#4319`](https://github.com/lance-format/lance/issues/4319), is still open and appears stale relative to the merged multi-bit RaBitQ work.
+- Multi-segment vector index work is active around [`#6309`](https://github.com/lance-format/lance/issues/6309) and discussion [`#6189`](https://github.com/lance-format/lance/discussions/6189). The discussion covers `IVF_FLAT`, `IVF_PQ`, and `IVF_SQ` first, while `IVF_RQ` is called out as a separate path.
+- [`#7440`](https://github.com/lance-format/lance/pull/7440) exposes vector index handle readers and may affect how high-bit index internals are accessed by future query or cache code.
+- [`#7640`](https://github.com/lance-format/lance/pull/7640) shares IVF partition scans across batch vector queries. This is not precision restoration, but it can interact with prepared partition search.
+
+### Open issues and risks
+
+- The task wording that only 1-bit RaBitQ is available is now partly stale. The remaining gap is not basic storage availability; it is hardening 4-bit and 8-bit behavior through query, cache, remap, merge, and bindings.
+- [`#7157`](https://github.com/lance-format/lance/issues/7157) reports `IVF_RQ` retrieval quality degradation as embedding dimension grows. This must be resolved or explicitly scoped before high-bit RaBitQ is claimed as a precision restoration tier.
+- [`#7276`](https://github.com/lance-format/lance/issues/7276) tracks a 4-bit distance-table performance regression. Precision restoration should not trade base-table reads for an avoidable hot-loop regression.
+- Closed-unmerged [`#7077`](https://github.com/lance-format/lance/pull/7077) should be treated only as historical context. Current behavior should be proven from merged PRs and tests.
+- The public bit-width contract is unclear: the product task calls out 4-bit and 8-bit, while Rust currently accepts `1..=9`.
+- High-bit scoring must not silently degrade to sign-bit-only scoring except when the user selected `ApproxMode::Fast`.
 
 ### What should be done next
 
-1. Reconcile upstream tracking.
-   - Update or close stale tracker [`#4319`](https://github.com/lance-format/lance/issues/4319).
-   - Treat closed-unmerged [`#7077`](https://github.com/lance-format/lance/pull/7077)
-     only as historical context; prove the upstream query behavior from merged
-     PRs and tests, not from that PR.
-   - Create or reuse one explicit tracking issue for "high-bit quantized
-     cache/global refine" if none exists after updating `#4319`.
+1. Update or split [`#4319`](https://github.com/lance-format/lance/issues/4319) so the tracker reflects the merged high-bit work and the remaining validation gaps.
+2. Decide the public `IVF_RQ` bit-width contract: only 4 and 8, the current `1..=9`, or a documented subset.
+3. Add end-to-end tests for `IVF_RQ` with `num_bits=4` and `num_bits=8` across cold search, warm/prewarmed cache search, optimize/remap, and distributed or multi-segment search.
+4. Assert that `ApproxMode::Normal` and `ApproxMode::Accurate` use high-bit ex-code scoring when the index was built with `num_bits > 1`.
+5. Re-run the 4-bit benchmark from [`#7276`](https://github.com/lance-format/lance/issues/7276) after query-path changes.
+6. Resolve or explicitly scope [`#7157`](https://github.com/lance-format/lance/issues/7157) before depending on high-dimensional `IVF_RQ` for recall restoration.
+7. Update Rust, Python, Java, and vector-index docs to describe supported `IVF_RQ` bit widths and `approx_mode` behavior.
 
-2. Lock down RaBitQ precision restoration.
-   - Add end-to-end tests for `IVF_RQ` with `num_bits=4` and `num_bits=8` across
-     cold search, warm/prewarmed cache search, optimize/remap, and distributed
-     or multi-segment search.
-   - Assert that `ApproxMode::Normal` and `ApproxMode::Accurate` use high-bit
-     ex-code scoring when the index was built with `num_bits > 1`, and that only
-     `ApproxMode::Fast` is allowed to drop to sign-bit-only scoring.
-   - Resolve or explicitly scope [`#7157`](https://github.com/lance-format/lance/issues/7157)
-     before using high-dimensional `IVF_RQ` as a precision-restoration tier.
-   - Re-run the 4-bit performance benchmark from
-     [`#7276`](https://github.com/lance-format/lance/issues/7276) after any
-     query-path changes.
+## Stage 2: Cache / Global Refine
 
-3. Make the SQ bit-width contract unambiguous.
-   - Decide whether this task implements true non-8-bit SQ or formally limits
-     SQ to SQ8.
-   - If SQ remains SQ8, validate `SQBuildParams.num_bits == 8` in Rust and align
-     Python and Java errors/docs.
-   - If high-bit SQ is required, add real storage and distance kernels for the
-     selected widths, version cache serialization, and add recall tests.
-   - Reconcile [`#7355`](https://github.com/lance-format/lance/pull/7355),
-     [`#7481`](https://github.com/lance-format/lance/pull/7481), and
-     [`#7352`](https://github.com/lance-format/lance/issues/7352) so SQ dot
-     correctness is not left in a half-fixed state.
+Define and implement a cache-resident precision restoration tier for global ANN refine. This stage should preserve exact raw-vector refine while adding a cheaper high-precision re-score path.
 
-4. Define cache/global-refine semantics.
-   - Keep existing `Scanner::refine(factor)` semantics as exact raw-vector
-     re-rank unless the public API is intentionally changed.
-   - Add a separate quantized cached re-score mode, `approx_mode` behavior, or
-     cache policy that clearly means "approximate high-bit re-score without base
-     table vector reads".
-   - Use the cache envelope from [`#7163`](https://github.com/lance-format/lance/pull/7163)
-     and keep discussion [`#7575`](https://github.com/lance-format/lance/discussions/7575)
-     in mind so the feature can survive persistent or third-party cache
-     backends.
-   - Add metrics/tests that fail if a warm-cache quantized re-score silently
-     falls back to `take()` of raw vectors.
+Relevant local files:
 
-5. Fit into index maintenance work.
-   - Make sure high-bit RQ/SQ cache entries survive remap, compaction, optimize,
-     copy, and multi-segment coexistence.
-   - Align with discussion [`#6189`](https://github.com/lance-format/lance/discussions/6189)
-     and tracking issue [`#6309`](https://github.com/lance-format/lance/issues/6309),
-     especially because `IVF_RQ` is on a separate segment-evolution path.
-   - Treat covering-index work in [`#6909`](https://github.com/lance-format/lance/discussions/6909)
-     and [`#7566`](https://github.com/lance-format/lance/pull/7566) as adjacent:
-     useful for avoiding metadata `TakeExec`, but not a replacement for
-     high-bit vector re-score.
+- `rust/lance/src/dataset/scanner.rs`
+- `rust/lance/src/io/exec/knn.rs`
+- `rust/lance/src/session.rs`
+- `rust/lance/src/index/vector/ivf/partition_serde.rs`
+- `rust/lance/src/index/vector/ivf/v2.rs`
+- `rust/lance/src/dataset/tests/dataset_index.rs`
+- `rust/lance-index/src/vector/sq.rs`
+- `rust/lance-index/src/vector/sq/builder.rs`
+- `rust/lance-index/src/vector/sq/storage.rs`
+- `python/src/dataset.rs`
+- `python/python/lance/dataset.py`
+- `java/src/main/java/org/lance/index/vector/SQBuildParams.java`
+- `java/lance-jni/src/utils.rs`
 
-6. Update public docs and bindings.
-   - Document the supported RaBitQ bit widths and whether all of them are public
-     compatibility guarantees or implementation limits.
-   - Document that SQ is either SQ8-only or list the real supported high-bit SQ
-     widths.
-   - Add Python and Java examples for any public `num_bits`, `approx_mode`, or
-     cache-refine behavior that this task exposes.
+### Done
 
-## Proposed task description
+- Existing `Scanner::refine(factor)` semantics are exact: Lance overfetches `k * refine_factor`, reads original vector values from the base table, and runs flat KNN over raw vectors.
+- Cache serialization was stabilized in [`#7163`](https://github.com/lance-format/lance/pull/7163) with a versioned cache-codec envelope.
+- The index cache can serialize partition entries for both SQ and RaBitQ.
+- RaBitQ cache headers preserve `num_bits`, `code_dim`, rotation type, query estimator, and fast-rotation signs.
+- SQ cache headers preserve `num_bits`, `dim`, distance type, and bounds.
+- SQ dot-product correctness improved in [`#7481`](https://github.com/lance-format/lance/pull/7481), which accounts for SQ affine offsets when the quantization lower bound is non-zero.
+- [`#7201`](https://github.com/lance-format/lance/issues/7201), the vector-index I/O metrics request, is closed. The precision restoration work should still include assertions that prove the warm-cache path avoids base-table vector reads when that is intended.
 
-Implement and validate a cache-aware precision restoration path for global ANN refine using high-bit quantizers.
+### In progress
 
-The feature should allow Lance to overfetch candidates from an approximate vector index and re-score those candidates with a higher-precision cached representation before producing final top-k results. For RaBitQ, this means using the multi-bit `IVF_RQ` ex-code path, especially in `ApproxMode::Normal` or `ApproxMode::Accurate`, through cache/prewarm/reconstruction. For SQ, this means either implementing true high-bit SQ storage and distance or enforcing that SQ is SQ8 only and documenting that it is not part of "high-bit" precision restoration.
+- [`#7355`](https://github.com/lance-format/lance/pull/7355) is still open and also targets SQ dot distance by computing from dequantized values. It must be reconciled with merged [`#7481`](https://github.com/lance-format/lance/pull/7481) and the open recall report [`#7352`](https://github.com/lance-format/lance/issues/7352).
+- Discussion [`#7575`](https://github.com/lance-format/lance/discussions/7575) proposes pluggable cache backends across Rust, Python, and Java, which is relevant to any persistent cache-resident precision tier.
+- [`#7566`](https://github.com/lance-format/lance/pull/7566) is an open draft for covering/included columns in `IVF_PQ` vector search. It can reduce base-table `TakeExec` I/O for covered projections, but it is adjacent rather than a high-bit vector re-score path.
+- The public query semantics for a cached quantized re-score tier are not yet defined: it could be a new refine mode, an `approx_mode` behavior, an index option, or a cache policy.
 
-The end result should make cached/global refine recall closer to exact raw-vector refine while avoiding the base-table I/O cost whenever the configured precision tier is sufficient.
+### Open issues and risks
 
-## Likely deliverables
+- Changing `Scanner::refine(factor)` to become approximate would break the current documented meaning of exact raw-vector re-rank. A new mode or explicit option is safer.
+- SQ has an exposed `num_bits` field in metadata and build params, but the current storage and distance path are effectively SQ8: `ScalarQuantizer::transform` maps to `u8`, storage is `FixedSizeList<UInt8>`, and distances use `l2_u8` / `dot_u8`.
+- Python docs say SQ supports only 8 bits, Python's generic `num_bits` kwarg currently updates PQ/RQ params rather than SQ params, and Java exposes SQ `numBits`. The bindings are not aligned.
+- Silently accepting `num_bits != 8` for SQ while producing SQ8 codes is a precision bug and API trap.
+- `SQBuildParams::sample_size` scales as `sample_rate * 2^num_bits`; accepting large SQ bit widths without validation can create unreasonable sampling requests.
+- Any true high-bit SQ storage layout needs cache codec versioning and backward compatibility with existing SQ8 cache entries.
+- The feature needs metrics or tests that fail if warm-cache quantized re-score silently falls back to `take()` of raw vectors.
 
-1. Terminology cleanup
-   - Use `RaBitQ` / `IVF_RQ` consistently in technical docs and task notes.
-   - Use `SQ` consistently for scalar quantization.
-   - Keep `Rabit*` only where referring to existing Rust identifiers.
+### What should be done next
 
-2. RaBitQ high-bit refine hardening
-   - Audit `IVF_RQ` with `num_bits > 1` through normal query, `Scanner::refine`, index cache prewarm, cache serialization, optimize/remap, and distributed merge.
-   - Ensure cached/prepared partition search does not drop to one-bit scoring unless the user explicitly selected `ApproxMode::Fast`.
-   - Add coverage for 4-bit and 8-bit, since those are the bit widths called out in the plan.
+1. Keep existing `Scanner::refine(factor)` semantics as exact raw-vector re-rank unless there is an intentional public API change.
+2. Define the cache/global-refine API for approximate high-bit re-score: new refine mode, `approx_mode` extension, index metadata, or cache policy.
+3. Decide the SQ contract. Either implement true non-8-bit SQ or validate `SQBuildParams::num_bits == 8` in Rust and align Python, Java, and docs.
+4. If high-bit SQ is required, implement real storage and distance kernels for the selected widths, version the cache serialization, and add recall tests.
+5. Reconcile [`#7355`](https://github.com/lance-format/lance/pull/7355), [`#7481`](https://github.com/lance-format/lance/pull/7481), and [`#7352`](https://github.com/lance-format/lance/issues/7352) so SQ dot-distance correctness is not left in a half-fixed state.
+6. Add tests that prove a warm-cache high-bit re-score path can run without base data-file vector reads after prewarm.
+7. Add recall assertions against exact search, not just index creation or query success.
+8. Update public docs and binding examples for any exposed `num_bits`, `approx_mode`, or cache-refine behavior.
 
-3. SQ decision
-   - If true high-bit SQ is required, add storage and distance support for the selected bit widths, probably `UInt16` for 16-bit and possibly packed 4-bit if requested.
-   - If SQ8 is the only supported SQ, validate `SQBuildParams.num_bits == 8` at Rust API boundaries and update Python/Java behavior and docs.
-   - Ensure all bindings either expose the same supported bit widths or reject unsupported values with matching error messages.
+## Stage 3: Cache / Hierarchical index
 
-4. Cache/global refine behavior
-   - Define whether high-bit quantized re-score is a new refine mode, part of `approx_mode`, or internal cache policy.
-   - Preserve exact raw-vector refine semantics for existing `Scanner::refine`.
-   - Add metrics or tests that prove the cache refine path can run without base data-file reads after prewarm.
+Compose a multi-precision filtering path: low-cost ANN data on object storage, a higher-precision cached SQ or RaBitQ tier, and optional exact raw-vector refine. This stage should start after the Stage 1 and Stage 2 contracts are stable.
 
-5. Documentation
-   - Update vector index docs with supported bit widths.
-   - Explain the precision ladder: coarse ANN, high-bit cached re-score, optional exact raw-vector refine.
-   - Document quality/latency tradeoffs and expected use cases.
+Relevant local references:
 
-## Suggested acceptance criteria
+- `plans/docs/02-vector-indexes.md`
+- `plans/docs/03-index-on-disk-and-search.md`
+- `rust/lance/src/session.rs`
+- `rust/lance/src/index/vector/ivf/v2.rs`
+- `rust/lance/src/index/vector/ivf/partition_serde.rs`
+- `rust/lance-index/src/vector/pq.rs`
+- `rust/lance-index/src/vector/sq.rs`
+- `rust/lance-index/src/vector/bq.rs`
+
+### Done
+
+- Lance already has the building blocks for IVF-based vector indexes: `IVF_FLAT`, `IVF_PQ`, `IVF_SQ`, `IVF_RQ`, `IVF_HNSW_FLAT`, and `IVF_HNSW_SQ`.
+- Multi-bit RaBitQ and versioned cache serialization provide part of the foundation needed for a high-bit cached tier.
+- PQ storage row IDs after fragment-reuse remap were fixed in [`#7315`](https://github.com/lance-format/lance/pull/7315), and `IVF_RQ` remap behavior was fixed in [`#7217`](https://github.com/lance-format/lance/pull/7217).
+- Discussion [`#6909`](https://github.com/lance-format/lance/discussions/6909) defines the covering-index direction, and draft [`#7566`](https://github.com/lance-format/lance/pull/7566) implements covering/included columns for `IVF_PQ` vector search.
+
+### In progress
+
+- Multi-segment vector index work remains active around [`#6309`](https://github.com/lance-format/lance/issues/6309) and discussion [`#6189`](https://github.com/lance-format/lance/discussions/6189).
+- [`#7566`](https://github.com/lance-format/lance/pull/7566) is adjacent because covering columns can avoid some base-table reads, but it does not replace a high-bit vector re-score tier.
+- [`#7640`](https://github.com/lance-format/lance/pull/7640) may improve shared IVF partition scans for batch queries and should be considered when designing hierarchical scans.
+- Discussion [`#7575`](https://github.com/lance-format/lance/discussions/7575) is relevant because a hierarchical design depends on cache capacity, eviction, persistence, and backend behavior.
+- There is no clearly defined hierarchical query planner yet for "OBS PQ/RaBitQ first, cached SQ second, optional exact refine third."
+
+### Open issues and risks
+
+- Without Stage 2 semantics, the hierarchical task can drift into projection/cache optimization only. It needs an explicit high-bit re-score contract.
+- Cache policy must decide what gets materialized, where it lives, how it is prewarmed, and how it is evicted across DRAM, SSD, and remote/object storage.
+- Multi-precision ranking needs clear score semantics. Mixing PQ/RaBitQ first-pass scores with SQ second-pass scores can produce surprising behavior unless the final ranking stage is explicit.
+- Row-ID and fragment remap correctness must hold across every tier: PQ/RaBitQ on object storage, cached SQ, and exact base-table vectors.
+- Memory and SSD cost can grow quickly if cached SQ is materialized broadly. The design needs limits, metrics, and fallback behavior.
+- The recall target for "precision restoration" is not yet defined. The stage needs a numeric recall goal against exact search and latency/I/O targets for cold and warm cache.
+- Covering-index work is useful but not a replacement for high-bit vector precision restoration.
+
+### What should be done next
+
+1. Write the hierarchical query contract: OBS low-precision scan, cached high-precision re-score, and optional exact raw-vector refine.
+2. Define how the planner selects tiers: index metadata, query option, cache policy, or cost model.
+3. Define the cached SQ materialization format and how it interacts with pluggable cache backends from [`#7575`](https://github.com/lance-format/lance/discussions/7575).
+4. Add instrumentation for per-tier candidates, bytes read, cache hits, base-table vector reads, and final recall.
+5. Add tests for multi-fragment datasets, optimize/remap, compaction, copy, and multi-segment coexistence.
+6. Add cold-cache and warm-cache benchmarks that compare low-precision only, cached high-precision re-score, and exact raw-vector refine.
+7. Treat [`#6909`](https://github.com/lance-format/lance/discussions/6909) and [`#7566`](https://github.com/lance-format/lance/pull/7566) as adjacent work: integrate when useful, but do not count covered projections as vector precision restoration.
+
+## Cross-stage acceptance criteria
 
 - `IVF_RQ` with `num_bits=4` and `num_bits=8` can be built and queried from Rust and bindings where those APIs exist.
 - Warm-cache searches over high-bit `IVF_RQ` preserve high-bit scoring and do not silently fall back to 1-bit scores except in `ApproxMode::Fast`.
@@ -339,17 +236,3 @@ The end result should make cached/global refine recall closer to exact raw-vecto
 - Cache codec roundtrips preserve all high-bit RQ/SQ fields and remain backward compatible with existing SQ8 and RQ1 cache entries.
 - Tests cover cold search, warm/prewarmed cache search, optimize/remap, and at least one recall assertion against exact search.
 - Public docs and Python/Java API docs match the implemented behavior.
-
-## Open questions
-
-- Which bit widths are required by the product target: only 4 and 8 for RaBitQ, the current `1..=9` RQ range, or a smaller supported/public subset?
-- Is the desired global refine output allowed to remain approximate, or must user-facing `refine_factor` continue to mean exact raw-vector re-rank?
-- Should the high-bit precision tier be selected by `approx_mode`, a new query option, index metadata, or cache policy?
-- What recall target should define "precision restoration" for Lance 8?
-
-## Risk notes
-
-- SQ currently accepts and persists `num_bits` but uses `UInt8` codes. That can make metadata imply higher precision than the actual index provides.
-- `SQBuildParams::sample_size` scales as `sample_rate * 2^num_bits`; accepting large SQ bit widths without validation can create unreasonable sampling requests.
-- Cache serialization has explicit codec versions. Any true high-bit SQ layout change must avoid misreading old SQ8 cache entries.
-- RQ high-bit code is more complete, but cache/refine tests should target the composed system because bugs often appear at build/merge/cache/query boundaries.
