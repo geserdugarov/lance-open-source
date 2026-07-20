@@ -463,9 +463,13 @@ those (the "delta" handling described in `03-index-on-disk-and-search.md` §5).
 
 A standalone vector segment can be trained over an explicit fragment subset.
 Independently trained subset segments generally have different IVF centroids
-or quantizer state and cannot be merged or optimized together. Distributed
-segments intended for a later merge must reuse the same precomputed IVF and
-PQ/SQ/RQ model; merge validation rejects incompatible state.
+or quantizer state and should remain separate physical segments. Distributed
+segments intended for a later merge must reuse the same precomputed model
+state. The merger validates IVF/PQ/RQ compatibility, but the current SQ path
+does not compare learned quantization bounds and there is no public shared-bounds
+input, so independently trained SQ segments must not be physically merged. See
+[`05-distributed-vector-index-creation.md`](05-distributed-vector-index-creation.md)
+for the full distributed protocol and compatibility matrix.
 
 ---
 

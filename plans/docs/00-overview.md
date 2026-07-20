@@ -11,6 +11,7 @@ sibling documents drill into each subsystem:
 | `02-vector-indexes.md` | Vector index types (IVF, PQ, SQ, HNSW, RaBitQ), composition, build flow |
 | `03-index-on-disk-and-search.md` | Index file format, query execution, prefilter + refinement |
 | `04-lance-versions.md` | `Lance v1`, `v2`, … major release lines; which version to anchor to for compatibility |
+| `05-distributed-vector-index-creation.md` | Distributed build protocol, model scope, segment merge/commit invariants, operations, and progress tracker |
 
 ---
 
@@ -221,6 +222,10 @@ The rest of this document set expands each box.
    an existing one.
 4. Read `03-index-on-disk-and-search.md` before debugging query latency,
    recall, or index rebuild behavior.
+5. Use `04-lance-versions.md` when deciding which released compatibility line
+   a change or investigation should target.
+6. Read `05-distributed-vector-index-creation.md` before integrating vector
+   index builds with an external scheduler or designing delta consolidation.
 
-All four files are cross-referenced and can be read in isolation, but the
+All six files are cross-referenced and can be read in isolation, but the
 order above minimizes backtracking.
