@@ -19,7 +19,8 @@ Request fixes if a gate for a touched surface is red:
 ## Public API & format compatibility
 
 - No public API signature changes in place — old methods must be `#[deprecated]` / `@deprecated` with a new method added, not mutated or removed.
-- On-disk and serialization format changes are versioned (enums for format versions, stable serialization for index/manifest files). A "harmless rename" of a persisted key, proto field, or manifest field is a migration, not a refactor — reject it when framed as a refactor.
+- For a stable on-disk format, require backward and forward compatibility with the latest released stable version. A "harmless rename" of a persisted key, proto field, or manifest field is a migration, not a refactor — reject it when framed as a refactor.
+- Treat unstable formats as disposable. Do not request migrations, fallbacks, or compatibility fixtures for files written by intermediate unreleased revisions.
 - Spot-check that moved code still routes through the same I/O, object-store, and error paths. A refactor is not allowed to silently change side effects.
 
 ## Cross-language bindings

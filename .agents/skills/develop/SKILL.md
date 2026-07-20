@@ -14,6 +14,11 @@ Lance is a Rust workspace (`rust/lance*`) with Python (PyO3/maturin) and Java (J
 - Imperative mood, short and specific. Match the style in `git log --oneline -20`.
 - Keep PRs focused — no drive-by refactors, reformatting, or cosmetic churn outside the change's blast radius.
 
+When filing an issue from the CLI or API, use the matching title prefix and
+explicit label: `bug:` + `bug`, `feature:` + `feature`, or `perf:` +
+`performance`. These paths bypass the issue forms, so the label is not added
+automatically.
+
 ## Pre-merge checklist
 
 Run the lint/test gates for **every** language surface you touched, even when they are slow. Follow the environment rules in each directory guide — don't substitute a different toolchain because a command looks missing, unavailable, or slow.
@@ -93,6 +98,12 @@ When you move or rename a public symbol, constant, or behavior, update the docs 
 - the relevant `AGENTS.md` (root, `rust/`, `python/`, `java/`, `protos/`, `docs/src/format/`) — note `CLAUDE.md` is a symlink to `AGENTS.md`.
 - the doc comments on the affected public API; keep examples compiling — write Rust doctests as a compiled `# async fn` rather than marking them `ignore`.
 - the format/spec docs under `docs/src/format/` and the `.proto` comments under `protos/` whenever the on-disk format or messages change.
+
+For format work, determine the format's stability before designing compatibility
+behavior. A stable format is a durable contract: preserve backward and forward
+compatibility with the latest released stable version. An unstable format may
+change freely; do not add migrations, fallbacks, or fixtures for intermediate
+unreleased revisions.
 
 ## Rust gotchas
 
