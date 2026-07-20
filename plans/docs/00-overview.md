@@ -18,18 +18,19 @@ sibling documents drill into each subsystem:
 
 ```
 my_dataset.lance/
-├── data/                              <- All user-visible data lives here
-│   ├── <uuid-1>.lance                 <- Data file (one per fragment-per-column-group in v2)
+├── data/                              <- Base and overlay data files
+│   ├── <uuid-1>.lance                 <- Base file (one per fragment/column group in v2)
 │   ├── <uuid-2>.lance                 <- Each file holds many pages across many columns
 │   └── ...
 ├── _versions/                         <- Immutable manifests, one per committed version
-│   ├── 1.manifest                     <- Protobuf: schema, fragments[], indices[], flags
-│   ├── 2.manifest
+│   ├── <version-key>.manifest         <- Schema, fragments, index segments, flags
+│   ├── <version-key>.manifest         <- V1 and V2 use different naming schemes
 │   └── ...
 ├── _indices/                          <- All secondary indexes (vector, scalar, FTS)
-│   └── <index-uuid>/                  <- One directory per logical index (keyed by UUID)
-│       ├── <segment>.idx              <- Index segments (layout depends on index type)
-│       └── ...
+│   ├── <segment-uuid>/                <- One directory per physical index segment
+│   │   ├── index.idx                  <- Index-specific primary structures
+│   │   └── auxiliary.idx              <- Codes, row IDs, or auxiliary structures
+│   └── ...                            <- A named logical index may have many segments
 ├── _deletions/                        <- Per-fragment deletion vectors
 │   └── <frag-id>-<version>.arrow      <- Tombstone bitmap, added lazily
 └── _transactions/                     <- Transaction log (used for conflict resolution)
@@ -40,68 +41,52 @@ Constants authoritatively defined in the source:
 
 | Dir | Constant | Location |
 |---|---|---|
-| `data/` | `DATA_DIR` | `rust/lance/src/dataset.rs:148` |
-| `_versions/` | `VERSIONS_DIR` | `rust/lance-table/src/io/commit.rs:70` |
-| `_indices/` | `INDICES_DIR` | `rust/lance/src/dataset.rs:147` |
-| `_deletions/` | `DELETIONS_DIR` | `rust/lance-table/src/io/deletion.rs:25` |
-| `_transactions/` | `TRANSACTIONS_DIR` | `rust/lance/src/dataset.rs:149` |
+| `data/` | `DATA_DIR` | `rust/lance/src/dataset.rs` |
+| `_versions/` | `VERSIONS_DIR` | `rust/lance-table/src/io/commit.rs` |
+| `_indices/` | `INDICES_DIR` | `rust/lance/src/dataset.rs` |
+| `_deletions/` | `DELETIONS_DIR` | `rust/lance-table/src/io/deletion.rs` |
+| `_transactions/` | `TRANSACTIONS_DIR` | `rust/lance/src/dataset.rs` |
 
-**Key property:** data files are **append-only and immutable**. An `UPDATE` or
-`DELETE` does not rewrite data files — it writes new fragments or adds a
-deletion vector, and produces a new manifest. This is what makes Lance
-zero-copy-versioned.
+**Key property:** data and index files are **append-only and immutable**. An
+`UPDATE` may append replacement fragments or sparse overlay files, while a
+`DELETE` appends a deletion vector. The next manifest references the new
+objects; older manifests retain their original snapshot. This is what makes
+Lance zero-copy-versioned.
 
 ---
 
 ## 2. Crate layering (relevant to vector workflows)
 
 ```
-                ┌──────────────────────────────────────┐
- Bindings       │  python/src (PyO3)  │  java/lance-jni │
-                └──────────────────────────────────────┘
-                                  ▲
-                                  │
-                ┌──────────────────────────────────────┐
- Execution     │           lance (main crate)           │
-                │  • Dataset, Fragment, Scanner          │
-                │  • write/  index/  io/commit/  io/exec│
-                └──────────────────────────────────────┘
-                          ▲              ▲
-                          │              │
-   ┌──────────────────────┴─┐   ┌────────┴────────────┐
-   │  lance-datafusion      │   │  lance-index        │
-   │  (SQL / planner glue)  │   │  • vector/ivf, pq,  │
-   └────────────────────────┘   │    sq, hnsw, bq     │
-                          ▲      └─────────────────────┘
-                          │               ▲
-                ┌─────────┴──────┐         │
-                │  lance-table   │   ┌─────┴─────────┐
-                │  • Manifest    │   │ lance-linalg  │
-                │  • Fragment    │   │ • distance/   │
-                │  • DataFile    │   │ • kmeans      │
-                │  • IndexMeta   │   │ • simd/       │
-                └────────────────┘   └───────────────┘
-                          ▲
-                          │
-    ┌────────────┬────────┴─────────┬──────────────┐
-    │ lance-file │  lance-encoding  │   lance-io   │
-    │ reader/    │  logical +       │  ObjectStore │
-    │ writer +   │  physical        │  scheduler   │
-    │ footer     │  encoders        │  blob cache  │
-    └────────────┴──────────────────┴──────────────┘
-                          ▲
-                          │
-                ┌─────────┴──────┐
-                │  lance-core    │   Schema, Field,
-                │  lance-arrow   │   error, Arrow utils
-                └────────────────┘
+ Bindings       python/src (PyO3)       java/lance-jni (JNI)
+                              │
+ Execution            lance (main crate)
+                 Dataset / Fragment / Scanner
+                    ┌─────┴─────┐
+                    │           │
+             lance-datafusion   lance-index
+               planner glue     vector + scalar implementations
+                    │           │
+                    │      lance-index-core
+                    │       traits + types
+                    │           │
+                 lance-table   lance-linalg
+            manifest / fragments  distance / kmeans / SIMD
+                    │           │
+       ┌───────────┼───────────┴──────┐
+       │            │                  │
+   lance-file    lance-encoding       lance-io
+ reader/writer   logical + physical   object store + scheduler
+       └───────────┴───────────┬──────────┘
+                            │
+                 lance-core / lance-arrow
 ```
 
 For vector workloads, the hot path touches:
 
 - **Write:** `lance` → `lance-encoding` (primitive encoder for `FixedSizeList<f32>`) → `lance-file` (writer) → `lance-io` (object store).
-- **Index build:** `lance` → `lance-index::vector::*` → `lance-linalg` (kmeans, distance) → `lance-file` (writer for index segments).
-- **Query:** `lance::dataset::scanner` → `lance-index::vector` + `lance::io::exec::knn` → `lance-linalg::distance` (SIMD kernels).
+- **Index build:** `lance` → contracts from `lance-index-core` → implementations in `lance-index::vector::*` → `lance-linalg` (kmeans, distance) → `lance-file` (segment files).
+- **Query:** `lance::dataset::scanner` → `lance-index-core` + `lance-index::vector` + `lance::io::exec::knn` → `lance-linalg::distance` (SIMD kernels).
 
 ---
 
@@ -123,18 +108,19 @@ legible. All five are tied together by the `Manifest`.
            ▼                                 ▼
   ┌────────────────┐                ┌──────────────────┐
   │   Fragment     │                │  IndexMetadata   │
-  │ • id           │                │ • uuid           │
+  │ • id           │                │ • name + uuid    │
   │ • data_files[] │                │ • fields[]       │
-  │ • deletion_vec │                │ • fragment_bitmap│
+  │ • overlays[]   │                │ • fragment_bitmap│
+  │ • deletion_vec │                │                  │
   └──────┬─────────┘                │ • dataset_version│
          │ points to                │ • files[]        │
          ▼                          └──────────┬───────┘
   ┌──────────────┐                             │
-  │  DataFile    │                             │ physical segments
+  │  DataFile    │                             │ one physical segment
   │ (.lance file)│                             ▼
   │  • path      │                   ┌───────────────────┐
   │  • fields[]  │                   │ _indices/<uuid>/  │
-  └──────┬───────┘                   │   <segment>.idx   │
+  └──────┬───────┘                   │ index.idx + aux   │
          │                           └───────────────────┘
          ▼
   ┌────────────────────────────────────┐
@@ -146,10 +132,14 @@ legible. All five are tied together by the `Manifest`.
 | Concept | Lives in | Role for vector workloads |
 |---|---|---|
 | **Dataset** | `rust/lance/src/dataset.rs` | User-facing handle; owns object store, commit handler, current manifest |
-| **Fragment** | `rust/lance-table/src/format/fragment.rs` + `rust/lance/src/dataset/fragment.rs` | Immutable slice of rows; tracks which `DataFile`s hold its columns + deletion vector |
+| **Fragment** | `rust/lance-table/src/format/fragment.rs` + `rust/lance/src/dataset/fragment.rs` | Immutable row-address range; tracks base files, sparse overlays, and a deletion vector |
 | **DataFile** | `rust/lance-table/src/format/fragment.rs` | One physical `.lance` file; knows which field IDs it stores |
 | **Manifest** | `rust/lance-table/src/format/manifest.rs` | Versioned snapshot — the atomic unit of a commit |
-| **IndexMetadata** | `rust/lance-table/src/format/index.rs` | Pointer from manifest to index directory; carries `fragment_bitmap` so queries know which fragments are "indexed" vs "unindexed" |
+| **IndexMetadata** | `rust/lance-table/src/format/index.rs` | Describes one physical segment of a named logical index; its `fragment_bitmap` contributes to aggregate coverage |
+
+A logical index is identified by `name`, not UUID. All same-name segments
+with compatible details are queried, and the union of their fragment bitmaps
+defines the covered portion of the dataset.
 
 A `Scanner` (in `rust/lance/src/dataset/scanner.rs`) is the query-builder that
 stitches these together at read time; the full query path is covered in
@@ -176,7 +166,7 @@ column of type `FixedSizeList<Float32, 768>`, through index build, to a
   │    → FileWriter (lance-file/src/writer.rs)                       │
   │    → PrimitiveStructuralEncoder for FixedSizeList<f32>           │
   │       (lance-encoding/src/encodings/logical/primitive.rs)        │
-  │    → Byte-Stream-Split + LZ4/Zstd compression                    │
+  │    → Optional Byte-Stream-Split + LZ4/Zstd compression           │
   │    → Bytes land in data/<uuid>.lance (pages + col meta + footer) │
   └──────────────────────────────────────────────────────────────────┘
                                         │  commit
@@ -184,7 +174,7 @@ column of type `FixedSizeList<Float32, 768>`, through index build, to a
   ┌──────────────────────────────────────────────────────────────────┐
   │ 2. COMMIT                                                        │
   │    Transaction{ op: Add(fragments) }                             │
-  │    → CommitHandler atomically writes _versions/<N>.manifest      │
+  │    → CommitHandler atomically writes the next versioned manifest │
   │    → New Manifest lists the new Fragment + its DataFile          │
   └──────────────────────────────────────────────────────────────────┘
                                         │  create_index(column="vector", …)
@@ -200,20 +190,20 @@ column of type `FixedSizeList<Float32, 768>`, through index build, to a
   │    (c) Shuffle rows into per-partition Lance files               │
   │    (d) Train quantizer (PQ/SQ/RQ) on sampled data                │
   │    (e) Build sub-index per partition (flat list or HNSW graph)   │
-  │    (f) Write segments under _indices/<index-uuid>/               │
-  │    (g) New Manifest records IndexMetadata w/ fragment_bitmap     │
+  │    (f) Write one or more UUID segments under _indices/            │
+  │    (g) Record one IndexMetadata per segment + fragment coverage   │
   └──────────────────────────────────────────────────────────────────┘
                                         │  scanner.nearest("vector", q, k)
                                         ▼
   ┌──────────────────────────────────────────────────────────────────┐
   │ 4. QUERY                                                         │
   │    lance/src/dataset/scanner.rs::vector_search                   │
-  │    → open_vector_index (deserialize IVF + quantizer from disk)   │
+  │    → open every compatible segment for the named logical index   │
   │    → IVF: top-nprobes partitions vs centroids                    │
   │    → Sub-index search per partition (flat scan / HNSW traversal) │
   │    → Quantized distance approximation (PQ table / SQ / RQ)       │
   │    → Optional refine: exact re-rank with raw vectors             │
-  │    → Merge with flat-scanned unindexed fragments                 │
+  │    → Merge segment results with flat-scanned uncovered fragments │
   │    → Prefilter: scalar predicates pushed into / applied around   │
   │    → Top-k RecordBatch stream to user                            │
   └──────────────────────────────────────────────────────────────────┘

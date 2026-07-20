@@ -11,7 +11,8 @@ implementing new distance kernels, or diagnosing recall / latency issues.
 
 ## 1. The index-type taxonomy
 
-Authoritative enum: `IndexType` in `rust/lance-index/src/lib.rs` (lines ~104–138).
+Authoritative enum: `IndexType` in `rust/lance-index-core/src/lib.rs`
+(`lance-index` re-exports the shared index contracts).
 
 ```
                         VECTOR INDEX TYPES
@@ -101,7 +102,7 @@ pub struct IvfModel {
 | Field | Default | Meaning |
 |---|---:|---|
 | `num_partitions` | `None` *(deprecated)* | Explicit `k`. If unset, derived from `target_partition_size`. |
-| `target_partition_size` | `None` *(per-variant default)* | Target rows/partition (IVF_FLAT≈4096, IVF_SQ/PQ≈8192, IVF_HNSW_*≈1 M) |
+| `target_partition_size` | `None` *(per-variant default)* | Target rows/partition: IVF_FLAT/RQ 4096, IVF_SQ/PQ 8192, IVF_HNSW_* `1 << 20` |
 | `max_iters` | 50 | k-means iterations |
 | `centroids` / `retrain` | `None` / `false` | Bring your own IVF centroids; opt into retraining from them. |
 | `sample_rate` | 256 | Rows sampled **per centroid** for training (so total sample ≈ `256 × k`) |
@@ -126,9 +127,9 @@ recall/latency trade-off at query time:
 
 ## 3. PQ — Product Quantization
 
-Compresses each D-dim vector into **M bytes** (default M=16) by independently
-quantizing M non-overlapping sub-vectors against per-sub-vector codebooks of
-256 centroids each.
+Independently quantizes M non-overlapping sub-vectors against per-sub-vector
+codebooks. Lance supports 4- and 8-bit codes, so storage is
+`M × num_bits / 8` bytes per vector (default M=16 and 8 bits = 16 bytes).
 
 ```
    Original vector (D = 96, for diagram brevity)
@@ -149,8 +150,8 @@ quantizing M non-overlapping sub-vectors against per-sub-vector codebooks of
    │ q0 │ q1 │ q2 │ … │ q7 │    each q in [0,255]  →  1 byte
    └────┴────┴────┴───┴────┘
 
-   Storage per vector = M bytes  (here 8, default 16).
-   Codebook memory    = M × 256 × (D/M) × 4 bytes (float32)
+   Storage per vector = M × num_bits / 8 bytes (here 8, default 16).
+   Codebook memory    = M × 2^num_bits × (D/M) × 4 bytes (float32)
                        = for D=768, M=16  →  16 × 256 × 48 × 4 B ≈ 768 KiB
 ```
 
@@ -174,7 +175,7 @@ pub struct ProductQuantizer {
 | Field | Default | Meaning |
 |---|---:|---|
 | `num_sub_vectors` | 16 | `M` — must divide `D` |
-| `num_bits` | 8 | 256 centroids per sub-vector. 4-bit is *possible* but rarely used — prefer `IVF_RQ` for aggressive compression. |
+| `num_bits` | 8 | Must be 4 or 8. Four-bit PQ packs two sub-vector codes per byte, so `M` must be even. |
 | `max_iters` | 50 | per-sub-vector k-means iterations |
 | `sample_rate` | 256 | training rows per codebook centroid |
 
@@ -183,6 +184,9 @@ full-precision, each sub-vector distance to each codebook centroid is
 precomputed into a `M × 256` lookup table, and scoring a stored vector is
 M table lookups plus a sum. Code: `rust/lance-index/src/vector/pq/distance.rs`
 (`build_distance_table_l2`, `build_distance_table_dot`).
+
+Pre-trained-model plumbing must preserve `num_bits`; treating every imported
+PQ model as PQ8 changes both its layout and distance-table semantics.
 
 ```
   Query q                Codebook m (256 centroids)
@@ -204,14 +208,15 @@ M table lookups plus a sum. Code: `rust/lance-index/src/vector/pq/distance.rs`
 
 ## 4. SQ — Scalar Quantization
 
-Per-dimension `int8` (default). Simpler than PQ, 1 byte per dim, no
-cross-dimensional interaction.
+Scalar `uint8` quantization. Lance currently trains one range across every
+sampled value and stores one byte per dimension; there is no per-dimension
+range or cross-dimensional codebook.
 
 ```
-  Per dimension d, compute global min/max over the training sample
-  (or a per-dimension range). Then map:
+  Compute one global min/max over all dimensions in the training sample.
+  Then map every scalar value:
 
-       int8(x_d) = clamp( (x_d - min_d) / (max_d - min_d) * 255, 0, 255 )
+       uint8(x) = clamp( (x - min) / (max - min) * 255, 0, 255 )
 
   Storage = D bytes per vector (vs 4 D for f32).
 ```
@@ -226,8 +231,8 @@ pub struct ScalarQuantizer {
 // rust/lance-index/src/vector/sq/storage.rs
 pub struct ScalarQuantizationMetadata {
     pub dim:      usize,
-    pub num_bits: u16,         // 8 default (4 also present)
-    pub bounds:   Range<f64>,  // populated lazily from the training sample
+    pub num_bits: u16,         // metadata/build field; 8 default
+    pub bounds:   Range<f64>,  // one global range from the training sample
 }
 ```
 
@@ -238,10 +243,11 @@ pub struct ScalarQuantizationMetadata {
 | `num_bits` | 8 |
 | `sample_rate` | 256 |
 
-Trade-off: SQ preserves per-dimension structure (PQ doesn't) so it can
-re-rank better with a small overhead, but PQ's per-sub-vector codebooks
-achieve far higher compression (16 B vs 768 B per 768-dim vector) at the
-cost of accuracy.
+The build API carries `num_bits`, but the transform currently calls
+`scale_to_u8` unconditionally (`TODO: support SQ4`). Treat the operational
+format as SQ8 until that implementation changes. PQ's per-sub-vector
+codebooks achieve much higher compression (16 B vs 768 B for 768 dimensions)
+at a different accuracy trade-off.
 
 ---
 
@@ -305,9 +311,9 @@ Path: `rust/lance-index/src/vector/hnsw/index.rs`.
 
 ## 6. RaBitQ — rotated bit quantization (`IVF_RQ`)
 
-Recent addition (see commits `0108b96c`, `8f479dbf` and neighbours). Projects
-vectors through a randomized rotation and then keeps only the **sign bits**
-(or top-4 bits) per rotated dimension.
+Projects vectors through a randomized rotation. The first bit records the
+binary sign code; Extended RaBitQ adds up to eight more bits per rotated
+dimension. The public build range is therefore 1 through 9 bits.
 
 ```
    x  (D-dim f32)
@@ -315,26 +321,27 @@ vectors through a randomized rotation and then keeps only the **sign bits**
        ▼   R: D×D rotation matrix (or fast FHT-KAC)
      R·x
        │
-       ▼   sign(·)  (binary) or top-4-bits per dim (4-bit)
-   binary-code   (D / 8 bytes for 1-bit;  D / 2 bytes for 4-bit)
+       ▼   1-bit binary code + optional extended code bits
+   packed code   (about D × num_bits / 8 bytes, before metadata)
 
   Distance approximation:
-     Hamming-like on binary codes, or table-based 4-bit lookup.
+     Hamming-like on binary codes, or table-based multi-bit lookup.
      Final re-rank against full vectors (refine) is recommended.
 ```
 
 **Struct:** `RabitQuantizer` — `rust/lance-index/src/vector/bq/builder.rs`
 
-**Build params** — `RabitBuildParams`:
+**Build params** — `RQBuildParams`:
 
 | Field | Default | Meaning |
 |---|---:|---|
-| `num_bits` | 1 | `1` (binary) or `4`. `IVF_RQ` typically uses 4. |
+| `num_bits` | 1 | Any value in `1..=9`; 1 is binary and larger values enable the extended code. |
 | `rotation_type` | `Fast` | `Fast` (FHT-KAC, O(D log D)) or `Matrix` (dense, O(D²)) |
 
-Why it exists: at 4 bits/dim on a 768-dim vector it is ~2× smaller than PQ
-with 16 × 8 bits, with different approximation characteristics. The 4-bit
-distance kernel has ARM NEON SIMD for ~16× speed-up.
+At 4 bits/dimension, a 768-dimensional packed code is about 384 B: 2× smaller
+than SQ8 and 8× smaller than the 3,072 B raw f32 vector, but substantially
+larger than a default 16 B PQ code. RaBitQ occupies a different
+recall/computation point; its 4-bit distance path includes ARM NEON SIMD.
 
 ---
 
@@ -409,10 +416,11 @@ Treat the above as a back-of-the-envelope.)
 | `Hamming` | u8 | binary vectors (RaBitQ 1-bit codes) |
 
 Kernels live per metric in `rust/lance-linalg/src/distance/{l2, cosine, dot,
-hamming}.rs`, and per element-type in `rust/lance-linalg/src/simd/`
-(`f32.rs`, `f64.rs`, `u8.rs`, `i32.rs`, `dist_table.rs`). Architectures
-covered: `x86_64` (SSE / AVX2 / AVX-512 via target features),
-`aarch64` (NEON), `loongarch64`.
+hamming}.rs`, and per element type in `rust/lance-linalg/src/simd/`. On
+`x86_64`, the baseline and runtime dispatcher choose only features the host
+supports (including AVX/AVX2/FMA/AVX-512 tiers, with scalar fallbacks), so
+pre-Haswell CPUs do not execute a wheel's unavailable instructions. Other
+paths include `aarch64` NEON and `loongarch64`.
 
 **Recent kernels (cross-check commit log):**
 
@@ -420,6 +428,7 @@ covered: `x86_64` (SSE / AVX2 / AVX-512 via target features),
 - `perf: add SIMD kernels for bf16 distance functions` (`d0124edf`)
 - `perf: add SIMD-accelerated u8 dot product for SQ distance` (`8f479dbf`)
 - `perf: add explicit SIMD types and distance kernels for f64` (`c913ff8f`)
+- Runtime SIMD dispatch for x86_64 portability (`4fc74b72a`)
 
 ---
 
@@ -443,7 +452,7 @@ index_type="IVF_HNSW_PQ", num_partitions=…, num_sub_vectors=…, …)`.
              • Flat: just store codes contiguously
              • HNSW: insert codes layer by layer with
                ef_construction beam search                  lance-index/src/vector/hnsw/builder.rs
- (h)      Write segments under _indices/<uuid>/             lance-file / lance-index storage
+ (h)      Write a physical segment under _indices/<uuid>/    lance-file / lance-index storage
  (i)      Commit new Manifest w/ IndexMetadata +
              fragment_bitmap of covered fragments           lance-table::format::manifest
 ```
@@ -451,6 +460,12 @@ index_type="IVF_HNSW_PQ", num_partitions=…, num_sub_vectors=…, …)`.
 Output: the shiny new index directory and a new manifest version. Fragments
 added *after* the build are simply not in the bitmap; query time will flat-scan
 those (the "delta" handling described in `03-index-on-disk-and-search.md` §5).
+
+A standalone vector segment can be trained over an explicit fragment subset.
+Independently trained subset segments generally have different IVF centroids
+or quantizer state and cannot be merged or optimized together. Distributed
+segments intended for a later merge must reuse the same precomputed IVF and
+PQ/SQ/RQ model; merge validation rejects incompatible state.
 
 ---
 
@@ -461,14 +476,14 @@ starting points for 768-dim text embeddings over ≤ 10 M rows:
 
 | Param | Starting value | Direction for more recall | Direction for more speed |
 |---|---|---|---|
-| `num_partitions` (IVF) | `sqrt(N)` | — | — |
-| `target_partition_size` | 8192 (flat), 1 M (HNSW) | larger | smaller |
+| `num_partitions` (IVF) | auto: `N / target_partition_size` | — | — |
+| `target_partition_size` | 4096 (FLAT/RQ), 8192 (SQ/PQ), `1 << 20` (HNSW) | larger | smaller |
 | `nprobes` (query-time) | 20 | ↑ | ↓ |
 | `num_sub_vectors` (PQ) | 16 (if D=768) | ↑ (must divide D) | ↓ |
-| `num_bits` (PQ) | 8 | — | — |
+| `num_bits` (PQ) | 8 (4 also supported) | — | — |
 | `m` (HNSW) | 20 | ↑ | ↓ |
 | `ef_construction` | 150 | ↑ | build only |
-| `ef_search` | 2·k | ↑ | ↓ |
+| `ef_search` | `k + k/2` | ↑ | ↓ |
 | `refine_factor` (query-time) | 10 | ↑ | ↓ |
 
 `refine_factor` is not an index parameter — it is applied at the scanner
@@ -482,7 +497,7 @@ the `DataFile`.
 
 | Concern | Path |
 |---|---|
-| Top-level `IndexType` enum | `rust/lance-index/src/lib.rs` |
+| Top-level `IndexType` enum | `rust/lance-index-core/src/lib.rs` |
 | Generic builder | `rust/lance/src/index/vector/builder.rs` |
 | Logical vector index | `rust/lance/src/index/vector.rs` |
 | IVF model | `rust/lance-index/src/vector/ivf/storage.rs` |

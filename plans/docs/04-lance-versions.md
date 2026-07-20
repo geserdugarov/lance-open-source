@@ -17,7 +17,7 @@ how to pin correctly.
 
 | Axis | Example | What it protects | Authoritative source |
 |---|---|---|---|
-| **Library version** (`Lance vN`) | `v8.0.0`, `9.0.0-beta.10` | The public **API** (Rust / Python / Java signatures, defaults, behavior) | `release_process.md`, `docs/src/community/release.md` |
+| **Library version** (`Lance vN`) | `v8.0.0`, `9.1.0-beta.3` | The public **API** (Rust / Python / Java signatures, defaults, behavior) | `release_process.md`, `docs/src/community/release.md` |
 | **File format version** | `2.0`, `2.1`, `2.2`, `2.3` (unstable) | The **data files on disk** | `rust/lance-encoding/src/version.rs` (`LanceFileVersion`), `docs/src/format/file/versioning.md` |
 | **Table format feature flags** | `FLAG_STABLE_ROW_IDS`, `FLAG_BASE_PATHS` | The **manifest / dataset layout** | `docs/src/format/table/versioning.md` |
 
@@ -27,6 +27,11 @@ one wrote (only the legacy `0.1` format lost *write* support, after
 library 0.34). What breaks across library majors is the API surface and
 occasionally a *default* (see §4). Format versions move independently and much
 more slowly than library majors.
+
+Stable file formats are durable backward- and forward-compatibility
+contracts. An explicitly unstable format (currently `2.3` / `next`) is
+disposable: unreleased intermediate revisions do not receive migrations or
+compatibility fallbacks.
 
 ```
  Library majors  v1 ─ v2 ─ v3 ─ v4 ─ (v5) ─ v6 ─ v7 ─ v8 ─ v9β   ← weeks apart
@@ -69,7 +74,7 @@ Dates are the stable-tag commit dates in this repository.
 | **Lance v6** | 2026-05-11 | `v6.0.1` (2026-05-20) | 198² | **Default storage version 2.0 → 2.1**; Arrow 58 / DataFusion 53; vendored tokenizers |
 | **Lance v7** | 2026-05-27 | `v7.0.0` | 141 | Auto-cleanup off by default; multi-base (base-aware) object store; materialized views |
 | **Lance v8** | 2026-07-01 | `v8.0.0` | 243 | Segmented index framework; RaBitQ approx mode + SIMD reranking; `IndexSegmentBuilder` removed |
-| **Lance v9** | *(in beta)* | `9.0.0-beta.16` | — | Current `main`; unequal-length columns in v2 files; multi-base tables & blob v2 APIs; MemWAL & distributed scalar index work |
+| **Lance v9** | *(in beta)* | `9.1.0-beta.3` | — | Current `main`; DataFusion 54, data overlays, index-core split, subset vector builds, and continuing storage/index work |
 
 ¹ non-merge commits since the previous stable major. ² v4 → v6 combined,
 since v5 never shipped.
@@ -181,14 +186,23 @@ The largest line so far (243 commits):
 
 ### Lance v9 (in beta)
 
-Current `main` (`9.0.0-beta.16` as of this writing). The major bump so far
-comes from renaming `FMIndexIndexDetails` to `FMIndexDetails` (#7397); no
-further breaking change has landed since. In flight across the betas: v2 file
-writer/reader support for columns of unequal length (#7406), distributed
-LabelList scalar index builds (#7223), multi-base tables (merge-insert target
-routing #7610, per-base storage options #7608), blob v2 write APIs (#7558,
-#7322), RLE v2 encoding widths (#7376), and continued MemWAL work. Everything
-here is preview-only until `v9.0.0` passes a vote.
+At base commit `b1570222c`, current `main` is `9.1.0-beta.3`. The v9 line
+began with the `FMIndexIndexDetails` → `FMIndexDetails` rename (#7397) and
+remains preview only until a stable v9 release passes a vote. Notable work
+across the betas:
+
+- DataFusion 54 and a new `lance-index-core` crate that owns shared index
+  traits/types while `lance-index` retains implementations.
+- Experimental data overlay files: manifest model and commit path, take/scan
+  resolution, Python transaction exposure, and overlay-aware compaction
+  thresholds.
+- V2 files with unequal column lengths, enabling sparse overlay payloads;
+  cached file metadata APIs and continued blob v2 / multi-base work.
+- Vector segments trained on explicit fragment subsets, with validation that
+  prevents merging independently trained IVF/quantizer models; multi-segment
+  hamming clustering and batched streaming IVF partition search.
+- Runtime x86_64 SIMD dispatch for pre-Haswell source builds and preservation
+  of PQ `num_bits` when Python supplies a pre-trained model.
 
 ---
 

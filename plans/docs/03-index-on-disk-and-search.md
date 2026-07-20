@@ -11,12 +11,12 @@ prefilter behavior, or index lifecycle (rebuilds, compaction, deltas).
 
 ## 1. The link from manifest to physical index files
 
-At commit time, creating an index adds one `IndexMetadata` entry to the new
-manifest and writes the index payload to `_indices/<uuid>/` under the
-dataset root.
+At commit time, each physical index segment contributes one `IndexMetadata`
+entry and writes its payload to `_indices/<segment-uuid>/`. A logical index is
+identified by `name` and may contain one or many disjoint segments.
 
 ```
-  _versions/17.manifest                  <- the committed manifest
+  _versions/<version-key>.manifest       <- the committed manifest
   ┌─────────────────────────────────┐
   │ schema                          │
   │ fragments: [...]                │
@@ -36,7 +36,11 @@ dataset root.
   └─────────────────────────────────┘
 ```
 
-`IndexMetadata` — `rust/lance-table/src/format/index.rs` (≈ line 31):
+The diagram shows one physical segment. Additional entries with
+`name = "emb_idx"` point to sibling UUID directories and cover disjoint
+fragment subsets.
+
+`IndexMetadata` — `rust/lance-table/src/format/index.rs`:
 
 ```rust
 pub struct IndexMetadata {
@@ -50,68 +54,58 @@ pub struct IndexMetadata {
     pub created_at: Option<DateTime<Utc>>,        // when the index was built (None for older indices)
     pub base_id: Option<u32>,                     // optional key into Manifest::base_paths
                                                   // (used when index files live outside the dataset root)
-    pub files: Option<Vec<IndexFile>>,            // physical segments + sizes
+    pub files: Option<Vec<IndexFile>>,            // files stored by this segment + sizes
 }
 ```
 
 Two key invariants:
 
-1. **UUID identity.** The `_indices/<uuid>/` directory is addressed by the
-   index's UUID, not its name. Renaming an index (if supported) leaves the
-   directory alone. Rebuilding an index produces a **new** UUID and a new
-   directory; the old one is retained until the next garbage collection so
-   older dataset versions remain readable.
+1. **Name vs UUID.** The name identifies the logical index; each UUID identifies
+   one immutable physical segment and its `_indices/<uuid>/` directory. Adding,
+   merging, or rebuilding payloads creates new UUIDs. Old directories remain
+   reachable from older manifests until garbage collection.
 
-2. **`fragment_bitmap` is the source of truth for "indexed" rows.** Any
-   fragment added *after* the index was built is not in the bitmap and is
-   said to be **unindexed**. At query time the scanner reads this bitmap to
-   decide whether to flat-scan the delta.
+2. **Coverage is the union of segment bitmaps.** Each segment's
+   `fragment_bitmap` is the source of truth for that segment. The union across
+   compatible same-name segments is indexed; current fragments outside that
+   union are uncovered and must be flat-scanned.
 
 Directory-resolution helpers:
 
-- `Dataset::indices_dir()` → `<dataset_root>/_indices/` (`rust/lance/src/dataset.rs:1982`)
+- `Dataset::indices_dir()` → `<dataset_root>/_indices/`
 - `Dataset::indice_files_dir(idx)` → the indices **base** directory for that index
   (typically `<dataset_root>/_indices/`, but redirected via `IndexMetadata::base_id`
   when the index lives outside the dataset root). Callers append `<index.uuid>/`
-  themselves to reach the segment files. (`rust/lance/src/dataset.rs:2352`)
+  themselves to reach the segment files. Both helpers live in
+  `rust/lance/src/dataset.rs`.
 
 ---
 
 ## 2. Physical layout of an IVF_PQ (or IVF_HNSW_PQ) index
 
-The index segments are Lance files (same `.lance` container as data files),
-with special schema-metadata keys that tell readers how to interpret them.
+The files inside each vector segment use the Lance container (the filenames
+end in `.idx`) with schema-metadata keys that tell readers how to interpret
+their contents.
 
 ```
-   _indices/<uuid>/
-   ├── <segment-a>.lance
-   │    │
-   │    │  Schema metadata:
-   │    │     lance:ivf           → serialized IvfModel (centroids + per-partition offsets/lengths)
-   │    │     lance:ivf:partition → per-partition auxiliary data layout
-   │    │     lance:pq            → serialized ProductQuantizationMetadata
-   │    │       • num_sub_vectors, num_bits, distance_type
-   │    │       • codebook_position   (index into global buffers)
-   │    │
-   │    │  Columns:
-   │    │     __ivf_part_id : UInt32     (partition each vector belongs to)
-   │    │     __pq_code     : FixedSizeBinary(M)   (or UInt8 × M)
-   │    │     (row-id  →  implicit via partition offset + position)
-   │    │
-   │    │  Global buffers:
-   │    │     PQ codebook (f32 flattened)  at position pq_codebook_position
-   │    │     IVF centroids (f32 flattened) at position ivf_centroids_position
-   │    │
-   │    │  Pages / columns / column meta / footer
-   │    │  (same v2 file layout as data files)
-   │    ↓
-   ├── <segment-b>.lance         <- optional additional segments, e.g. auxiliary data
-   └── ...
+   _indices/<segment-uuid>/
+   ├── index.idx
+   │    ├─ IVF centroids and partition/sub-index batches
+   │    ├─ HNSW graph data for HNSW variants
+   │    └─ metadata such as `lance:ivf` and `lance:hnsw`
+   └── auxiliary.idx
+        ├─ explicit row IDs, partitioned with quantized codes/raw vectors
+        ├─ storage metadata (`storage_metadata`)
+        └─ quantizer metadata/codebooks (`lance:pq`, `lance:sq`,
+           or `lance:rabit`)
+
+   Both files use the Lance container: pages, global buffers, column
+   metadata, offset tables, and footer.
 ```
 
-For the HNSW variants the layout adds per-partition graph segments, each
-holding the adjacency lists per layer plus the partition's entry point. The
-generic trait that lets IVF + various sub-indexes share this framework is
+For HNSW variants, `index.idx` also carries per-partition graph batches with
+the adjacency lists, layers, and entry points. The generic trait that lets IVF
+and its sub-indexes share this framework is
 `IvfSubIndex` in `rust/lance-index/src/vector/v3/subindex.rs`.
 
 Relevant storage modules:
@@ -158,8 +152,8 @@ End-to-end Rust pipeline:
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ 2. Plan                                                                  │
 │    Scanner::vector_search(filter_plan, query)                            │
-│      • load_indices() → pick IndexMetadata whose fields match column     │
-│      • open_vector_index(idx) (cached) → deserialize IvfModel + Q        │
+│      • resolve the named logical index and all compatible segments        │
+│      • open each UUID segment (cached) → deserialize IVF + Q             │
 │      • decide routing:                                                   │
 │          no index or all-unindexed fragments → FLAT PATH                 │
 │          index present                       → ANN PATH (+ delta merge) │
@@ -178,7 +172,7 @@ End-to-end Rust pipeline:
 │                     │                         │       load codes + graph │
 │                     │                         │       walk (HNSW) or scan│
 │                     │                         │       (flat) + dist table│
-│                     │                         │    d. top-k row IDs      │
+│                     │                         │    d. top-k per segment  │
 └──────────┬──────────┘                         └─────────────┬────────────┘
            │                                                   │
            │                                                   ▼
@@ -187,7 +181,7 @@ End-to-end Rust pipeline:
            │                                    │    scanner.rs :: knn_    │
            │                                    │    combined(...)         │
            │                                    │    if any fragment NOT   │
-           │                                    │    in fragment_bitmap:   │
+           │                                    │    in bitmap union:      │
            │                                    │      flat-scan those     │
            │                                    │      union w/ ANN top-k  │
            │                                    └─────────────┬────────────┘
@@ -205,12 +199,10 @@ End-to-end Rust pipeline:
                                  │
                                  ▼
            ┌────────────────────────────────────────────────┐
-           │ 5. PREFILTER / POSTFILTER                      │
-           │    prefilter = true:                           │
-           │       scalar predicates pushed down — ANN      │
-           │       search sees only surviving row IDs       │
-           │    prefilter = false (default):                │
-           │       ANN first, then filter the output batch  │
+           │ 5. FILTER BRANCHES                              │
+           │    prefilter=true ran the scalar predicate      │
+           │    before ANN and supplied its row-ID mask;     │
+           │    prefilter=false filters ANN output here.     │
            └─────────────────────┬──────────────────────────┘
                                  │
                                  ▼
@@ -221,11 +213,18 @@ End-to-end Rust pipeline:
            └────────────────────────────────────────────────┘
 ```
 
+The ANN branch fans out across every compatible physical segment, merges
+their candidates, and then merges the flat path for uncovered fragments. The
+prefilter and postfilter cases are alternative plans; prefiltering is not a
+late stage after ANN/refinement.
+
 ---
 
 ## 4. The ANN path in detail
 
-For `IVF_PQ` the ANN phase inside step 2 expands to:
+For `IVF_PQ` the ANN phase inside step 2 expands as follows for each segment
+(the sketch assumes the default PQ8; PQ4 uses 16-entry tables and packed
+codes):
 
 ```
   q = query vector (f32, D-dim)
@@ -243,7 +242,7 @@ For `IVF_PQ` the ANN phase inside step 2 expands to:
              approx_dist = Σ_m tbl[m][ v[m] ]
           (tight SIMD loop in dist_table)
        d. Maintain a bounded top-k heap across all probed partitions.
-  4. Output: top-k (row_id, approx_dist).
+  4. Output the segment's top-k (row_id, approx_dist); merge segment outputs.
 ```
 
 For `IVF_HNSW_PQ` step 3(c) is replaced by an HNSW graph walk where each
@@ -267,17 +266,25 @@ The canonical case: you built an index, then appended more data.
   └──────────────────────────────┘
 
   At query time:
-      indexed_fragments   = {0, 1, 2, 3, 4, 5}   → ANN via index X
-      unindexed_fragments = {6, 7}               → flat scan these
+      covered_fragments   = {0, 1, 2, 3, 4, 5}   → ANN via every segment
+      uncovered_fragments = {6, 7}               → flat scan these
       final top-k         = merge(ANN, flat) → dedup → sort → truncate
 ```
 
 Code: `rust/lance/src/dataset/scanner.rs`:
 
-- `Dataset::unindexed_fragments(index_name)` returns the complement.
+- `Dataset::unindexed_fragments(index_name)` returns the complement of the
+  same-name segment coverage union.
 - `Scanner::vector_search` branches on whether the merge is needed.
-- `knn_combined` unions the ANN output with a flat KNN plan over the delta
-  before top-k truncation.
+- The ANN plan queries all compatible segments; `knn_combined` unions those
+  candidates with a flat KNN plan over the delta before top-k truncation.
+
+Overlay files introduce a second stale-row case. The format contract requires
+rows updated by an overlay newer than a segment's `dataset_version` (and
+covering the indexed field) to be excluded from that segment and re-evaluated
+on the flat path with their current values. Overlay/index integration is
+experimental, so confirm that planner path before relying on it in a released
+client.
 
 A `fast_search=true` flag lets the user opt **out** of the delta merge —
 trading possible recall loss for latency if they know the delta is empty
@@ -322,17 +329,17 @@ Example query: `WHERE category = 'cats'` combined with vector search.
   considered during partition scanning. More accurate but costs a filter
   pass up front.
 
-The filter is represented as `Scanner::filter: LanceFilter`
-(`rust/lance/src/dataset/scanner.rs` ≈ line 739). Push-down wiring happens
-in the plan builder (`vector_search` + KNN execution nodes), which lowers
+The filter is represented as `Scanner::filter: LanceFilter`. Push-down wiring
+happens in the plan builder (`vector_search` + KNN execution nodes), which lowers
 `LanceFilter` into an `ExprFilterPlan` before execution.
 
 ---
 
 ## 8. Caching
 
-First query loads and deserializes the index. Subsequent queries reuse the
-in-memory structures via a nested cache.
+Opening a segment loads its readers and shared metadata. Queries then load and
+cache only the IVF partitions selected by `nprobes`; later queries can reuse
+those partition entries.
 
 ```
    GlobalIndexCache                           rust/lance/src/session/
@@ -341,7 +348,7 @@ in-memory structures via a nested cache.
    │   DSIndexCache(dsURI) │
    │   ┌─────────────────┐ │
    │   │                 │ │
-   │   │ IndexCache      │ │
+   │   │ Segment cache    │ │
    │   │  keyed by       │ │
    │   │  (idx UUID,     │ │
    │   │   maybe FRI)    │ │
@@ -349,22 +356,23 @@ in-memory structures via a nested cache.
    │   │ entries:        │ │
    │   │  • IvfModel     │ │
    │   │  • Quantizer    │ │
-   │   │  • HNSW graph   │ │
-   │   │  • PQ codes     │ │
-   │   │    (per part.)  │ │
+   │   │  • partition key │ │
+   │   │    → graph/codes │ │
    │   └─────────────────┘ │
    └───────────────────────┘
 ```
 
 Properties:
 
-- Process-wide by default (via `GlobalIndexCache`), scoped by session.
-- **Whole-index** load — there is no lazy per-partition loading at the cache
-  layer; the first touch hydrates everything. Partition codes themselves can
-  be streamed from disk inside the query, but the metadata and codebooks
-  land in memory up front.
-- Eviction is session-driven; persistent sessions keep hot indexes
-  essentially forever.
+- The session's `GlobalIndexCache` is namespaced by dataset URI, then segment
+  UUID and optional fragment-reuse-index UUID, preventing cross-dataset or
+  cross-segment collisions.
+- `IVFIndex::load_partition` lazily inserts the requested partition's
+  sub-index and storage into the segment cache.
+- `Dataset::prewarm_index(name)` opens **all** same-name segments and loads all
+  of their partitions. Tests assert that a subsequent query performs no index
+  I/O, including when the logical index has multiple delta segments.
+- Entries remain subject to the configured cache backend and capacity.
 
 ---
 
@@ -387,8 +395,12 @@ Properties:
 
 - Commits are atomic on the manifest pointer — a new version does not
   invalidate readers on the old one.
-- Index rewriting produces a **new UUID**. This is why the rebuild does not
-  risk corrupting the live index.
+- Every rewritten physical payload gets a **new UUID**. A full rebuild can
+  replace the logical index's segment set, while append optimization can add
+  a same-name delta segment and retain existing coverage. Queries fan out over
+  whichever set the manifest records.
+- Vector segments can be merged only when they share compatible IVF and
+  quantizer models; independently trained subset segments are rejected.
 - Compaction of data fragments requires index remapping. The
   *fragment reuse index* (optional auxiliary index) accelerates this by
   tracking where each old row ended up after compaction.
@@ -399,11 +411,12 @@ Properties:
 
 If recall is low:
 
-1. Is the right index being used? Call `ds.list_indices()`; confirm UUIDs
-   and `fragment_bitmap` coverage. Unindexed fragments mean flat-scan
+1. Is the right logical index being used? Inspect every same-name segment and
+   union their `fragment_bitmap` values. Uncovered fragments use the flat
    fallback.
 2. `nprobes` too low? Start at 20, then sweep.
-3. `ef_search` (for HNSW variants) too low? Start at `2·k`, sweep up.
+3. `ef_search` (for HNSW variants) too low? The default is `k + k/2`;
+   sweep upward.
 4. Add `refine_factor=10–30`. If recall jumps, the approximate distance is
    the bottleneck.
 5. Check distance type matches training. `Cosine` vs `L2` on
@@ -411,7 +424,8 @@ If recall is low:
 
 If latency is high:
 
-1. Cold cache? First query is always slow. Re-run and measure warm.
+1. Cold partitions? Re-run the same probe set or use `prewarm_index` when a
+   fully warm measurement is required.
 2. Prefilter with a very non-selective predicate is a tax — consider
    postfilter.
 3. Too many fragments → many per-fragment scan tasks. Consider compaction.

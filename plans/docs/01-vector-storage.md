@@ -52,8 +52,8 @@ in `rust/lance-encoding/src/encoder.rs`. If the child is a struct or list
 
 ## 2. On-disk layout of a single `.lance` data file (v2.x)
 
-The Lance v2 file format writes data pages first, then per-column metadata,
-then global buffers, then two offset tables, and finally a 16-byte footer.
+The Lance v2 file format writes data pages and out-of-line buffers first, then
+global buffers, per-column metadata, two offset tables, and a 40-byte footer.
 
 ```
   offset 0 ─▶ ┌────────────────────────────────────────────────────┐
@@ -62,7 +62,7 @@ then global buffers, then two offset tables, and finally a 16-byte footer.
               │  ┌──────────────────────────────────────────────┐  │
               │  │ page 0 (col A)                               │  │
               │  │  ├─ rep/def levels (null metadata)           │  │
-              │  │  └─ encoded values (BSS → LZ4 / Zstd …)      │  │
+              │  │  └─ encoded values (Value/BSS/codec as selected) │  │
               │  ├──────────────────────────────────────────────┤  │
               │  │ page 1 (col B)                               │  │
               │  │  ...                                         │  │
@@ -73,28 +73,27 @@ then global buffers, then two offset tables, and finally a 16-byte footer.
               │  in lance-file/src/writer.rs).                     │
               │                                                    │
               ├────────────────────────────────────────────────────┤
-              │            COLUMN METADATA (protobuf)              │
-              │   per column:                                      │
-              │     page_locations: [(offset, length, …)]          │
-              │     encoding:        PageEncoding (BSS, codec, …)  │
-              │     buffer refs  →   GLOBAL BUFFERS                │
+              │              GLOBAL BUFFERS                        │
+              │   shared artifacts (schema, statistics, or index   │
+              │   metadata/codebooks in index files)               │
               │                                                    │
               ├────────────────────────────────────────────────────┤
-              │              GLOBAL BUFFERS                        │
-              │   shared artefacts (e.g. PQ codebooks in index     │
-              │   files, statistics, schema metadata blobs)        │
+              │            COLUMN METADATA (protobuf)              │
+              │   page locations, encodings, and buffer refs       │
               │                                                    │
               ├────────────────────────────────────────────────────┤
               │  CMO TABLE   (column-metadata offsets)             │
               │  GBO TABLE   (global-buffer offsets)               │
               ├────────────────────────────────────────────────────┤
-              │  FOOTER (fixed size, 16 bytes)                     │
-              │    [cmo_ptr | gbo_ptr | major | minor | "LANC"]    │
+              │  FOOTER (fixed size, 40 bytes)                     │
+              │  [meta_start | CMO | GBO | counts | ver | "LANC"] │
               └────────────────────────────────────────────────────┘
 ```
 
-- **Footer magic** is `LANC` (`MAGIC` in `rust/lance-file/src/format.rs:33`).
-- **Version discrimination** (`rust/lance-file/src/reader.rs:234-238`):
+- **Footer magic** is `LANC` (`MAGIC` in `rust/lance-file/src/format.rs`). The
+  preceding fields are three `u64` offsets, two `u32` counts, and two `u16`
+  version numbers.
+- **Version discrimination** (`rust/lance-file/src/reader.rs`):
 
   | `(major, minor)` | Version enum |
   |---|---|
@@ -108,7 +107,9 @@ then global buffers, then two offset tables, and finally a 16-byte footer.
   and every version above it (today `V2_3`) are unstable, while everything
   below `Next` (`Legacy`, `V2_0`, `V2_1`, `Stable`, `V2_2`) is stable. `Stable`
   resolves to the enum default (`V2_1`); `Next` resolves to `V2_3`. New
-  datasets are written at the `Stable` version.
+  datasets are written at the `Stable` version. Stable versions are durable
+  backward- and forward-compatibility contracts. `V2_3` is unstable, so its
+  intermediate revisions may be replaced without migrations or fallbacks.
 
 - `V2_1+` uses the **structural encoding** machinery — this is the path a
   vector column takes today. Older files (`V2_0`) use a legacy layout under
@@ -129,21 +130,21 @@ Input column:  [[x00, x01, …, x0(D-1)], [x10, x11, …, x1(D-1)], …]     (N 
 Flatten (stride=D):
                [ x00  x01  …  x0(D-1)  x10  x11  …  x1(D-1)  … ]       (N·D f32 values)
 
-Per encoding chunk (≤ 1024 values for f32 → 4 KiB):
+Default path (`Stable` = `V2_1`):
 
-     Byte-Stream-Split (BSS)
-     ───────────────────────
+     ValueEncoder miniblocks → one or more chunks in an encoded page
+
+When general compression is configured for `f32` or `f64`, the strategy may
+select Byte-Stream-Split (BSS) before the requested LZ4/Zstd codec:
+
      f32 bytes:  [b0 b1 b2 b3][b0 b1 b2 b3]…    (interleaved, little-endian)
      BSS:        [b0 b0 b0 …][b1 b1 b1 …][b2 b2 b2 …][b3 b3 b3 …]
 
-     Rationale: each byte stream has lower entropy than raw floats,
-     so a block codec (LZ4 / Zstd) compresses it better.
+     f32 chunks contain at most 1024 values (4 KiB); f64 chunks contain
+     at most 512. A page can contain many chunks.
 
-     Block codec (LZ4 / Zstd)
-     ────────────────────────
-     Each of the 4 byte streams is compressed independently.
-
-     Result: one MiniBlock → one page buffer.
+`V2_2` can also select general compression automatically for large blocks;
+that behavior is not part of the current `Stable = V2_1` default.
 
      NOT applied to f32 vectors:
        • bitpacking  (integer-only; InlineBitpacking)
@@ -171,11 +172,11 @@ trivial and contributes negligible space.
   raw_dataset_bytes    = N × D × sizeof(T)
 ```
 
-Typical end-to-end compression for random embeddings is modest (5–15 %
-reduction). Embeddings have high entropy; BSS + LZ4 mostly recoup the
-sign-bit and exponent regularities of `f32`. Do not rely on aggressive
-compression for storage cost — rely on **indexing** (PQ / SQ / RQ) if the raw
-column is too large, or consider writing as `f16` / `bf16` for a ~2× cut.
+Random embeddings have high entropy, so even a configured BSS + LZ4/Zstd
+pipeline usually yields modest savings. Do not assume the default `V2_1`
+writer compresses f32 vectors, and do not rely on aggressive compression for
+storage cost. Use **indexing** (PQ / SQ / RQ) if the search structure is too
+large, or consider writing raw values as `f16` / `bf16` for a ~2× cut.
 
 ---
 
@@ -188,6 +189,7 @@ column is too large, or consider writing as `f16` / `bf16` for a ~2× cut.
       │   ├─ column 0  (id: int64)     pages …
       │   ├─ column 1  (text: string)  pages …
       │   └─ column 2  (vector: FSL<f32,768>)  pages …            ◀── vectors live INLINE
+      ├─ Overlay DataFile + coverage bitmap (optional sparse updates)
       └─ DeletionVector    (absent unless rows have been deleted)
 ```
 
@@ -200,10 +202,12 @@ Notes:
   an existing dataset) does produce *additional* `DataFile`s per fragment.
   Each new column group is another `(uuid).lance` file referenced by the same
   `Fragment`.
-- Vectors are **always inline in data pages**. There is no special "blob"
-  encoding for vectors; blob encoding exists in `rust/lance-encoding` but is
-  reserved for *variable-length* binary (images, audio, etc.), not
-  fixed-size numeric lists.
+- Sparse updates may append a `DataOverlayFile`, whose coverage bitmap maps
+  physical row offsets to rank-ordered values. V2 files support unequal
+  column lengths so different overlay fields can cover different row sets.
+- Vectors live in ordinary fixed-width numeric data pages, whether supplied by
+  a base file or an overlay. The blob encoding is for variable-length binary
+  such as images and audio, not fixed-size numeric lists.
 
 `DataFile` struct — `rust/lance-table/src/format/fragment.rs`:
 
@@ -219,7 +223,8 @@ pub struct DataFile {
 }
 ```
 
-`Fragment` (same file) holds a `Vec<DataFile>` plus optional deletion vector.
+`Fragment` (same file) holds base `Vec<DataFile>`, overlay
+`Vec<DataOverlayFile>`, and an optional deletion vector.
 
 ---
 
@@ -263,24 +268,23 @@ Call chain (Rust side):
         ▼
   rust/lance-encoding/src/encodings/logical/primitive.rs
         │   MiniBlockCompressor pipeline:
-        │     1. collect values into a chunk (≤1024 f32)
-        │     2. ByteStreamSplitEncoder
-        │     3. block codec (LZ4/Zstd)
-        │     4. emit EncodedPage (buffers + PageEncoding protobuf)
+        │     1. collect flattened values
+        │     2. select ValueEncoder or configured BSS + codec
+        │     3. emit EncodedPage (buffers + PageEncoding protobuf)
         ▼
   back in FileWriter
         │   write_buffer() for each page buffer
-        │   append column metadata, global buffers, CMO/GBO tables
-        │   write 16-byte footer
+        │   append global buffers, column metadata, CMO/GBO tables
+        │   write 40-byte footer
         ▼
   rust/lance-io/src/object_store.rs
-        │   ObjectStore::put_opts (S3/GCS/Azure/local)
+        │   ObjectWriter / object-store abstraction (S3/GCS/Azure/local)
         ▼
   bytes on disk
 ```
 
-Once the file is closed, the writer returns a `Fragment { id, data_files:
-[DataFile{...}] }` to the caller. The caller (usually the `Dataset` commit
+Once the file is closed, the writer returns a `Fragment { id, files:
+[DataFile{...}], ... }` to the caller. The caller (usually the `Dataset` commit
 path) bundles these into a `Transaction` and writes a new manifest — see
 `00-overview.md` §4 for the commit path.
 
@@ -311,7 +315,7 @@ Reader dispatch (simplified):
   rust/lance-encoding/src/decoder.rs
         │   per-column PageDecoder
         │   → PrimitiveStructuralDecoder (for FSL<primitive>)
-        │   → BSS decoder + codec decompression
+        │   → decode the selected value/BSS/compression pipeline
         ▼
   Arrow FixedSizeListArray → emitted in the RecordBatch stream
 ```
@@ -325,8 +329,7 @@ Two properties worth remembering when benchmarking vector reads:
    one or two pages per target row.
 2. **IO scheduler.** `lance-io` has a priority/merge scheduler
    (`rust/lance-io/src/scheduler.rs`) that coalesces adjacent byte ranges
-   before dispatch. For cold queries against object storage, the scheduler is
-   often the difference between 10 ms and 100 ms per page.
+   before dispatch, avoiding many small adjacent reads against object storage.
 
 ---
 
