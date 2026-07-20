@@ -27,11 +27,13 @@ The implementation should be staged because each task depends on the previous on
 2. `Cache / Global Refine`: define and implement the cache-resident precision restoration tier.
 3. `Cache / Hierarchical index`: compose object-storage ANN filtering and cached SQ refinement into a multi-precision query path.
 
-Status below was copied from the local repository audit and the public upstream status note already in this plan, checked against `lance-format/lance` on 2026-07-08. Local experimental branches may contain additional work that has not landed upstream.
+Status below combines the repository audit at base commit `b1570222c` with
+public `lance-format/lance` state checked on 2026-07-20. Local experimental
+branches may contain additional work that has not landed upstream.
 
 ## Open-source status and roadmap
 
-Status checked against public `lance-format/lance` on 2026-07-08:
+Status checked against public `lance-format/lance` on 2026-07-20:
 [discussions](https://github.com/lance-format/lance/discussions),
 [pull requests](https://github.com/lance-format/lance/pulls), and
 [issues](https://github.com/lance-format/lance/issues). This section treats
@@ -40,7 +42,7 @@ contain additional work that has not landed upstream.
 
 Release markers below use the first final Lance tag that contains the PR's
 merged commit. Beta and RC tags are ignored. Since the latest final release is
-`v8.0.0`, merged-after-`v8.0.0` and open PRs are marked `future 9.0`;
+`v8.0.0`, merged-after-`v8.0.0` and open PRs are marked `future 9.x`;
 closed-unmerged historical PRs are marked `not released`.
 
 | PR | First final release | Notes |
@@ -59,18 +61,22 @@ closed-unmerged historical PRs are marked `not released`.
 | [`#7163`](https://github.com/lance-format/lance/pull/7163) | `v8.0.0` | versioned cache-codec envelope |
 | [`#7217`](https://github.com/lance-format/lance/pull/7217) | `v8.0.0` | `IVF_RQ` fragment-reuse remap fix |
 | [`#7315`](https://github.com/lance-format/lance/pull/7315) | `v8.0.0` | PQ storage row-ID remap fix |
-| [`#7481`](https://github.com/lance-format/lance/pull/7481) | `future 9.0` | merged after `v8.0.0`; SQ dot offset fix |
-| [`#7355`](https://github.com/lance-format/lance/pull/7355) | `future 9.0` | open; SQ dot distance from dequantized values |
-| [`#7566`](https://github.com/lance-format/lance/pull/7566) | `future 9.0` | open draft; covering columns for `IVF_PQ` vector search |
-| [`#7440`](https://github.com/lance-format/lance/pull/7440) | `future 9.0` | open; vector index handle readers |
-| [`#7640`](https://github.com/lance-format/lance/pull/7640) | `future 9.0` | open; shared IVF partition scans for batch queries |
+| [`#7481`](https://github.com/lance-format/lance/pull/7481) | `future 9.x` | merged after `v8.0.0`; SQ dot offset fix |
+| [`#7583`](https://github.com/lance-format/lance/pull/7583) | `future 9.x` | merged; preserve PQ `num_bits` in Python model training |
+| [`#7679`](https://github.com/lance-format/lance/pull/7679) | `future 9.x` | merged; stabilize multi-bit `IVF_RQ` recall coverage |
+| [`#7680`](https://github.com/lance-format/lance/pull/7680) | `future 9.x` | merged; batch IVF streaming partition search |
+| [`#7768`](https://github.com/lance-format/lance/pull/7768) | `future 9.x` | merged; train vector segments on fragment subsets and validate shared models |
+| [`#7355`](https://github.com/lance-format/lance/pull/7355) | `future 9.x` | open; SQ dot distance from dequantized values |
+| [`#7566`](https://github.com/lance-format/lance/pull/7566) | `future 9.x` | open; covering columns for `IVF_PQ` vector search |
+| [`#7440`](https://github.com/lance-format/lance/pull/7440) | `future 9.x` | open; vector index handle readers |
+| [`#7640`](https://github.com/lance-format/lance/pull/7640) | `future 9.x` | open; shared IVF partition scans for batch queries |
 | [`#7077`](https://github.com/lance-format/lance/pull/7077) | not released | closed unmerged; historical context only; superseded by merged multi-bit `IVF_RQ` work |
 
 Roadmap mapping:
 
-- Stage 1 is mostly merged upstream for storage and query mechanics, but still needs public contract cleanup, 4-bit and 8-bit hardening, and recall/performance closure around [`#7157`](https://github.com/lance-format/lance/issues/7157) and [`#7276`](https://github.com/lance-format/lance/issues/7276).
+- Stage 1 is mostly merged upstream for storage and query mechanics. The 5-bit recall matrix and fragment-subset/shared-model validation improve the foundation, but explicit 4-bit and 8-bit hardening, public contract cleanup, and closure around [`#7157`](https://github.com/lance-format/lance/issues/7157) and [`#7276`](https://github.com/lance-format/lance/issues/7276) remain.
 - Stage 2 is only partially in place. The cache-codec foundation exists, but the cache/global-refine API and SQ bit-width contract still need implementation decisions.
-- Stage 3 is design-stage work. Covering-index and multi-segment work are adjacent foundations, but there is not yet a defined hierarchical query planner for `OBS PQ/RaBitQ -> cached SQ -> optional exact refine`.
+- Stage 3 is design-stage work. Fragment-subset segments, shared-model validation, batched IVF search, covering-index work, and multi-segment support are adjacent foundations, but there is not yet a defined hierarchical query planner for `OBS PQ/RaBitQ -> cached SQ -> optional exact refine`.
 
 ## Stage 1: Index Enhancement / RaBitQ Enhancement
 
@@ -93,13 +99,20 @@ Relevant local files:
 - RaBitQ high-bit performance work landed in [`#7205`](https://github.com/lance-format/lance/pull/7205), [`#7241`](https://github.com/lance-format/lance/pull/7241), and [`#7243`](https://github.com/lance-format/lance/pull/7243), covering ex-code reranking SIMD kernels, distance-table quantization, and lower-bound pruning.
 - `IVF_RQ` fragment-reuse remap behavior was fixed in [`#7217`](https://github.com/lance-format/lance/pull/7217).
 - Existing end-to-end tests build and search multi-bit `IVF_RQ` values such as `num_bits=4`, `num_bits=6`, and `num_bits=9`.
+- [`#7679`](https://github.com/lance-format/lance/pull/7679) moved the main
+  `IVF_RQ` recall matrix to 5-bit codes, kept both rotation types plus
+  remap/multivector coverage, and raised the recall requirement to `0.9`.
+- [`#7768`](https://github.com/lance-format/lance/pull/7768) made standalone
+  vector segments train correctly on explicit fragment subsets and rejects
+  merge/optimize when independently trained segments do not share the same
+  IVF and quantizer model.
 
 ### In progress
 
 - The original RaBitQ tracker, [`#4319`](https://github.com/lance-format/lance/issues/4319), is still open and appears stale relative to the merged multi-bit RaBitQ work.
 - Multi-segment vector index work is active around [`#6309`](https://github.com/lance-format/lance/issues/6309) and discussion [`#6189`](https://github.com/lance-format/lance/discussions/6189). The discussion covers `IVF_FLAT`, `IVF_PQ`, and `IVF_SQ` first, while `IVF_RQ` is called out as a separate path.
-- [`#7440`](https://github.com/lance-format/lance/pull/7440) exposes vector index handle readers and may affect how high-bit index internals are accessed by future query or cache code.
-- [`#7640`](https://github.com/lance-format/lance/pull/7640) shares IVF partition scans across batch vector queries. This is not precision restoration, but it can interact with prepared partition search.
+- Open [`#7440`](https://github.com/lance-format/lance/pull/7440) proposes vector index handle readers and may affect how high-bit index internals are accessed by future query or cache code.
+- Open [`#7640`](https://github.com/lance-format/lance/pull/7640) proposes shared IVF partition scans across batch vector queries. This is not precision restoration, but it can interact with prepared partition search.
 
 ### Open issues and risks
 
@@ -107,7 +120,10 @@ Relevant local files:
 - [`#7157`](https://github.com/lance-format/lance/issues/7157) reports `IVF_RQ` retrieval quality degradation as embedding dimension grows. This must be resolved or explicitly scoped before high-bit RaBitQ is claimed as a precision restoration tier.
 - [`#7276`](https://github.com/lance-format/lance/issues/7276) tracks a 4-bit distance-table performance regression. Precision restoration should not trade base-table reads for an avoidable hot-loop regression.
 - Closed-unmerged [`#7077`](https://github.com/lance-format/lance/pull/7077) should be treated only as historical context. Current behavior should be proven from merged PRs and tests.
-- The public bit-width contract is unclear: the product task calls out 4-bit and 8-bit, while Rust currently accepts `1..=9`.
+- The public bit-width contract is unclear: the product task calls out 4-bit and 8-bit, while Rust currently accepts `1..=9`. The new 5-bit recall matrix strengthens multi-bit coverage but does not replace explicit 4-bit and 8-bit acceptance tests.
+- Fragment-subset builds are valid, but separately trained segments are not
+  automatically composable. Any distributed or hierarchical build that plans
+  to merge segments must arrange shared precomputed model state.
 - High-bit scoring must not silently degrade to sign-bit-only scoring except when the user selected `ApproxMode::Fast`.
 
 ### What should be done next
@@ -148,13 +164,17 @@ Relevant local files:
 - RaBitQ cache headers preserve `num_bits`, `code_dim`, rotation type, query estimator, and fast-rotation signs.
 - SQ cache headers preserve `num_bits`, `dim`, distance type, and bounds.
 - SQ dot-product correctness improved in [`#7481`](https://github.com/lance-format/lance/pull/7481), which accounts for SQ affine offsets when the quantization lower bound is non-zero.
+- [`#7583`](https://github.com/lance-format/lance/pull/7583) preserves PQ
+  `num_bits` when Python supplies a pre-trained model. It is adjacent rather
+  than an SQ/RaBitQ refine implementation, but it closes an important
+  multi-precision model-metadata loss.
 - [`#7201`](https://github.com/lance-format/lance/issues/7201), the vector-index I/O metrics request, is closed. The precision restoration work should still include assertions that prove the warm-cache path avoids base-table vector reads when that is intended.
 
 ### In progress
 
 - [`#7355`](https://github.com/lance-format/lance/pull/7355) is still open and also targets SQ dot distance by computing from dequantized values. It must be reconciled with merged [`#7481`](https://github.com/lance-format/lance/pull/7481) and the open recall report [`#7352`](https://github.com/lance-format/lance/issues/7352).
 - Discussion [`#7575`](https://github.com/lance-format/lance/discussions/7575) proposes pluggable cache backends across Rust, Python, and Java, which is relevant to any persistent cache-resident precision tier.
-- [`#7566`](https://github.com/lance-format/lance/pull/7566) is an open draft for covering/included columns in `IVF_PQ` vector search. It can reduce base-table `TakeExec` I/O for covered projections, but it is adjacent rather than a high-bit vector re-score path.
+- [`#7566`](https://github.com/lance-format/lance/pull/7566) is open for covering/included columns in `IVF_PQ` vector search. It can reduce base-table `TakeExec` I/O for covered projections, but it is adjacent rather than a high-bit vector re-score path.
 - The public query semantics for a cached quantized re-score tier are not yet defined: it could be a new refine mode, an `approx_mode` behavior, an index option, or a cache policy.
 
 ### Open issues and risks
@@ -198,7 +218,13 @@ Relevant local references:
 - Lance already has the building blocks for IVF-based vector indexes: `IVF_FLAT`, `IVF_PQ`, `IVF_SQ`, `IVF_RQ`, `IVF_HNSW_FLAT`, and `IVF_HNSW_SQ`.
 - Multi-bit RaBitQ and versioned cache serialization provide part of the foundation needed for a high-bit cached tier.
 - PQ storage row IDs after fragment-reuse remap were fixed in [`#7315`](https://github.com/lance-format/lance/pull/7315), and `IVF_RQ` remap behavior was fixed in [`#7217`](https://github.com/lance-format/lance/pull/7217).
-- Discussion [`#6909`](https://github.com/lance-format/lance/discussions/6909) defines the covering-index direction, and draft [`#7566`](https://github.com/lance-format/lance/pull/7566) implements covering/included columns for `IVF_PQ` vector search.
+- [`#7768`](https://github.com/lance-format/lance/pull/7768) provides
+  fragment-subset vector segments plus shared-model validation, which is a
+  prerequisite for composing safe multi-segment tiers.
+- [`#7680`](https://github.com/lance-format/lance/pull/7680) batches streaming
+  IVF partition search away from the CPU pool, an adjacent execution-path
+  foundation for multi-tier queries.
+- Discussion [`#6909`](https://github.com/lance-format/lance/discussions/6909) defines the covering-index direction, and open [`#7566`](https://github.com/lance-format/lance/pull/7566) proposes covering/included columns for `IVF_PQ` vector search.
 
 ### In progress
 
