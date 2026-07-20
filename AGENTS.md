@@ -15,7 +15,8 @@ Rust workspace with Python and Java bindings:
 - `rust/lance-arrow/` - Apache Arrow integration layer
 - `rust/lance-encoding/` - Data encoding and compression algorithms
 - `rust/lance-file/` - File format reading/writing
-- `rust/lance-index/` - Vector and scalar indexing
+- `rust/lance-index-core/` - Shared index traits, types, and metadata
+- `rust/lance-index/` - Vector and scalar index implementations
 - `rust/lance-io/` - I/O operations and object store integration
 - `rust/lance-linalg/` - Linear algebra for vector search
 - `rust/lance-table/` - Table format and operations
@@ -47,12 +48,12 @@ The flat crate list above hides the layering. From bottom to top:
 ```
 Foundational:   lance-core,  lance-io,       lance-arrow
 Format/encode:  lance-file,  lance-encoding, lance-table
-Index/math:     lance-index, lance-linalg
+Index/math:     lance-index-core, lance-index, lance-linalg
 Execution:      lance-datafusion,  lance (main crate)
 Bindings:       python/src (PyO3), java/lance-jni (JNI)
 ```
 
-`lance-core` sits beneath nearly everything; `lance-table` defines the on-disk format structs (`Manifest`, `Fragment`, `DataFile`, `Transaction`) that `lance` operates on; `lance-index` plugs in via references inside `Manifest`.
+`lance-core` sits beneath nearly everything; `lance-table` defines the on-disk format structs (`Manifest`, `Fragment`, `DataFile`, `Transaction`) that `lance` operates on; `lance-index-core` defines the shared index contracts, and `lance-index` supplies implementations that plug in via references inside `Manifest`.
 
 ### Load-bearing abstractions
 
@@ -61,11 +62,11 @@ A future contributor will meet these quickly; knowing where they live saves a se
 | Concept | Lives in | Role |
 |---|---|---|
 | `Dataset` | `rust/lance/src/dataset.rs` | Top-level API; owns object store, commit handler, version state |
-| `Fragment` | `rust/lance-table/src/format/fragment.rs` + `rust/lance/src/dataset/fragment.rs` | Immutable data slice; groups `DataFile`s; carries a `DeletionVector` |
+| `Fragment` | `rust/lance-table/src/format/fragment.rs` + `rust/lance/src/dataset/fragment.rs` | Immutable data slice; groups base and overlay `DataFile`s; carries a `DeletionVector` |
 | `Manifest` | `rust/lance-table/src/format/manifest.rs` | Versioned snapshot: fragments + indices + schema + feature flags |
 | `Transaction` | `rust/lance/src/dataset/transaction.rs` | ACID change set; `read_version + Operation → next Manifest` |
 | `Scanner` | `rust/lance/src/dataset/scanner.rs` | Query builder/executor; returns record-batch streams |
-| `Index` | `rust/lance-index/` | IVF / HNSW / PQ / BTree / FTS; referenced from `Manifest`, stored under `_indices/` |
+| `Index` | traits/types in `rust/lance-index-core/`; implementations in `rust/lance-index/` | IVF / HNSW / PQ / BTree / FTS; referenced from `Manifest`, stored under `_indices/` |
 
 ### Binding entry points
 
@@ -76,7 +77,7 @@ These are thin translation layers — validation and logic belong in the Rust co
 
 ### Write/commit flow
 
-`InsertBuilder` (`rust/lance/src/dataset/write/insert.rs`) → `FragmentCreateBuilder` serializes batches via `lance-file` → `Transaction` constructed with `Operation::Add(fragments)` → new `Manifest` built → `CommitHandler` (in `rust/lance/src/io/commit/`) atomically writes `_versions/v<N>.manifest` → indices built async into `_indices/` via `lance-index`.
+`InsertBuilder` (`rust/lance/src/dataset/write/insert.rs`) → `FragmentCreateBuilder` serializes batches via `lance-file` → `Transaction` constructed with `Operation::Add(fragments)` → new `Manifest` built → `CommitHandler` (in `rust/lance/src/io/commit/`) atomically writes the next versioned manifest → indices built async into `_indices/` via `lance-index`.
 
 ## Development Commands
 
