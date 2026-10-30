@@ -30,6 +30,9 @@ A Lance dataset in its basic form stores all files within the dataset root direc
     _indices/
         {UUID}/
             ...           -- Index content (different for each index type)
+    _fri/
+        {map_id}/
+            stable_partition.lance -- Immutable stable-partition row map
     _refs/
         tags/
             *.json        -- Tag metadata
@@ -69,12 +72,14 @@ message BasePath {
 
 ### File Metadata Base References
 
-Three types of files can specify alternative base paths: data files, deletion files, and index metadata.
-Each of these file types includes an optional `base_id` field in their metadata that references a base path entry by its numeric identifier.
+Data files, deletion files, and index metadata can specify alternative base paths.
+Each includes an optional `base_id` field that references a base path entry by its numeric identifier, not its position in the array. Zero is a valid base ID.
 When a file's `base_id` is absent, the file is located relative to the dataset root.
 When a file's `base_id` is present, readers must look up the corresponding base path entry in the manifest's `base_paths` array to determine where the file is stored.
 
 Fragment tree children and fragment files stored in the tree also carry optional `base_id`. Resolution is specified in [Fragment Metadata Tree](fragment_metadata.md#object-references).
+
+[Stable-partition FRI maps](../index/system/frag_reuse.md#stable-partition) have their own base references. Their `_fri/<map_id>/` directories are independent of the FRI index UUID and must remain reachable when the index metadata is replaced or the dataset is cloned.
 
 At read time, path resolution follows a two-step process.
 First, the reader determines the base path: if `base_id` is absent, the base path is the dataset root; otherwise, the reader looks up the base path entry using the `base_id` to obtain the path and its `is_dataset_root` flag.
@@ -134,7 +139,6 @@ Clone dataset:  s3://experiments/test-variant
 
 Clone manifest base_paths:
 [
-  { id: 0, is_dataset_root: true, path: "s3://experiments/test-variant" },
   { id: 1, is_dataset_root: true, path: "s3://production/main-dataset",
     name: "v1.0" }
 ]
@@ -144,20 +148,21 @@ Original fragments (inherited):
   → resolves to: s3://production/main-dataset/data/fragment-0.lance
 
 New fragments (clone-specific):
-  DataFile { path: "fragment-new.lance", base_id: 0 }
+  DataFile { path: "fragment-new.lance", base_id: absent }
   → resolves to: s3://experiments/test-variant/data/fragment-new.lance
 ```
 
-The clone can append new data, modify schemas, or delete rows without affecting the source dataset.
-Only the manifest and new data files are stored in the clone location.
+The clone can append new data, modify schemas, or delete rows without affecting the source snapshot.
+The source base ID `1` in this example is illustrative, not a fixed clone convention. Inherited base references remain associated with their original locations across clone chains.
+The clone stores its own manifest and any new objects. Tagged FRI details may also be rewritten at the clone location to reference shared row maps through the clone's base paths; the map and user-index payloads remain shared.
 
 **Workflow:**
 
 1. [Clone transaction](transaction.md#clone) creates new manifest in target location
 2. Manifest includes base path pointing to source dataset
-3. Original fragments reference source via `base_id: 1`
-4. Subsequent writes reference clone location via `base_id: 0`
-5. Source dataset remains immutable and can be garbage collected independently
+3. Original source-local fragments reference the source base; already inherited references retain their bases
+4. Subsequent local writes can omit `base_id` to select the clone's dataset root
+5. Source objects remain available while any clone references them. Retain the required source snapshots, including inherited bases; do not assume garbage collection discovers standalone clones at unrelated dataset roots.
 
 ## Dataset Portability
 

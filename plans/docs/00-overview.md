@@ -14,6 +14,7 @@ sibling documents drill into each subsystem:
 | `03-index-on-disk-and-search.md` | Index file format, query execution, prefilter + refinement |
 | `04-lance-versions.md` | `Lance v1`, `v2`, … major release lines; which version to anchor to for compatibility |
 | `05-distributed-vector-index-creation.md` | Distributed build and Rust optimization protocols, model scope, segment merge/commit invariants, and progress tracker |
+| [Lance partitioning and S3 reorganization](lance-partitioning-and-s3-reorganization.md) | Physical row layout, stable-partition FRI, clone dependencies, and current support boundaries |
 
 ---
 
@@ -161,8 +162,11 @@ coverage, allowing small tables to flat-scan until optimization can train it.
 
 Stable row IDs and physical row addresses remain separate domains. v14 can
 store row-ID/version lineage in hidden columns and load fragment row-ID
-sequences on demand. FRI also supports stable-row-ID tables; an index's row
-domain determines whether address remapping is still needed.
+sequences on demand. An index's row domain determines whether address remapping
+is needed. In v14.0.2, version-0 FRI on stable-row-ID tables is debug-build-only;
+release builds reject that combination. Tagged FRI histories exclude
+stable-row-ID tables in every build. See the [partitioning guide's support
+boundaries](lance-partitioning-and-s3-reorganization.md#current-support-boundaries).
 
 A `Scanner` (in `rust/lance/src/dataset/scanner.rs`) is the query-builder that
 stitches these together at read time; the full query path is covered in
@@ -257,6 +261,8 @@ and `05-distributed-vector-index-creation.md` for the API boundaries.
    a change or investigation should target.
 6. Read `05-distributed-vector-index-creation.md` before integrating vector
    index builds with an external scheduler or designing delta consolidation.
+7. Read [Lance partitioning and S3 reorganization](lance-partitioning-and-s3-reorganization.md)
+   before changing base-row layout or moving a dataset with shared objects.
 
-All six files are cross-referenced and can be read in isolation, but the
+These guides are cross-referenced and can be read in isolation, but the
 order above minimizes backtracking.

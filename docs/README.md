@@ -68,6 +68,14 @@ uv sync --upgrade
 - `mkdocs.yml` - MkDocs configuration
 - `pyproject.toml` - Python project configuration (uv compatible)
 
+## Repository Architecture Notes
+
+[Lance IVF partitioning and data reorganization on S3](../plans/docs/lance-partitioning-and-s3-reorganization.md)
+describes the v14.0.2 rewrite, fragment-reuse, cloning, and storage boundaries.
+It complements the [vector architecture field guide](../plans/docs/00-overview.md).
+These source-oriented notes live in `plans/docs/` and are not included in the
+MkDocs site build.
+
 ## Theme Notes
 
 - Light/dark mode follows `prefers-color-scheme`, is toggleable from the

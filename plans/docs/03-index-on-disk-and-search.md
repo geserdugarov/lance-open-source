@@ -542,10 +542,14 @@ Properties:
   counts do so by default, but Rust's `with_partition_rebalancing()` enables
   split/join within that selected suffix. It rejects a zero merge count and
   cannot be combined with distributed task/segment row bounds.
-- Compaction of data fragments requires index remapping. The
-  *fragment reuse index* (optional auxiliary index) accelerates this by
-  tracking where each old row ended up after compaction. It also supports
-  stable-row-ID tables; address-domain indices may still need eager remapping.
+- Compaction of data fragments requires maintenance of address-domain indices.
+  The *fragment reuse index* (FRI) can defer remapping by tracking row movement.
+  Tagged FRI also represents stable partitioning, which preserves source order
+  within each destination; it cannot represent arbitrary sorting inside a
+  destination. In v14.0.2, tagged histories exclude stable-row-ID tables, and
+  version-0 FRI on those tables is debug-build-only. Release builds require
+  supported eager maintenance for their address-domain indices. See
+  [physical reorganization and FRI](lance-partitioning-and-s3-reorganization.md#choosing-a-rewrite-strategy).
 - Rust exposes `plan_optimize_indices`, task execution, merge execution, and
   `commit_optimize_indices` in `rust/lance/src/index/optimize.rs`. Bounded
   builds retain one reference model; retraining may train that model during

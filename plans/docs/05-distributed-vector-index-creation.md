@@ -18,6 +18,10 @@ Spark, Ray, Dask, Kubernetes, or other distributed scheduler; job ownership, ret
 checkpointing, model broadcast, and source-snapshot validation belong to the
 caller.
 
+These protocols write index objects and metadata; they do not sort the base
+table's rows. For physical clustering, FRI-backed rewrites, and sharing or
+copying S3 objects, see [Lance partitioning and S3 reorganization](lance-partitioning-and-s3-reorganization.md).
+
 The canonical lifecycle is:
 
 ```text

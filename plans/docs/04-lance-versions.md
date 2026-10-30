@@ -299,6 +299,10 @@ The first stable v9 release was followed by the corruption-safety patch
 - Shared FRI readers remap scalar/vector queries (#9107); FRI can be enabled
   on stable-row-ID datasets (#9120). HNSW remapping preserves graph topology
   (#9590), and ANN exposes stage timings (#9602).
+  In the v14.0.2 baseline, FRI with stable row IDs remains debug-build-only;
+  release builds reject it, and tagged histories exclude stable row IDs in
+  every build. See the [current support boundaries](lance-partitioning-and-s3-reorganization.md#current-support-boundaries)
+  before treating the feature's introduction as production availability.
 - Hidden row-lineage columns gain read/write, update, and compaction paths
   (#9336, #9339, #9347). Their later stabilization belongs to v14.
 - BM25F `combined_fields` queries score multiple fields and unindexed
