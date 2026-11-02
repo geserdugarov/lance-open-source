@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An illustrated guide to Lance clustering, Ascend NPU acceleration, and the limits of end-to-end speedup. Research snapshot: 30 October 2026.">
+  <title>Lance × Ascend — Where acceleration helps</title>
+  <style>
+    :root{--paper:#f5f3ed;--white:#fffefa;--ink:#172e3a;--muted:#536671;--line:#d4dcd8;--teal:#087b70;--teal-light:#dceee7;--orange:#b84825;--orange-light:#f8e5d8;--blue:#315ba1;--blue-light:#e1e8f5;--shadow:0 15px 40px #172e3a09;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--paper);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.65}a{color:var(--teal);text-decoration-thickness:1px;text-underline-offset:3px}a:hover{color:var(--orange)}button,input{font:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--orange);outline-offset:4px}button{color:var(--ink)}svg{max-width:100%;height:auto}p{margin:0 0 1.1rem}h1,h2,h3{line-height:1.13;letter-spacing:-.04em;margin:0 0 1rem}h1{font-size:clamp(2.6rem,6vw,5.8rem);max-width:850px;font-weight:740}h2{font-size:clamp(1.85rem,3.4vw,3rem)}h3{font-size:1.25rem;letter-spacing:-.02em}code{font-family:var(--mono);font-size:.88em;background:#e8eae4;padding:.15em .35em;border-radius:4px;overflow-wrap:anywhere}small,.small{font-size:.82rem}.muted{color:var(--muted)}.eyebrow{font:600 .74rem/1.6 var(--mono);text-transform:uppercase;letter-spacing:.13em;color:var(--teal);margin-bottom:1.25rem}.wrap{width:min(1180px,calc(100% - 64px));margin:auto}.skip{position:absolute;top:-80px;left:15px;background:var(--ink);color:white;padding:10px;z-index:10}.skip:focus{top:10px}.topbar{position:sticky;top:0;background:#f5f3edf5;backdrop-filter:blur(10px);z-index:5;border-bottom:1px solid var(--line)}.topbar .wrap{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:70px}.brand{color:var(--ink);font-size:1rem;letter-spacing:-.04em;font-weight:750;text-decoration:none;white-space:nowrap}.brand span{font-weight:400;color:var(--muted)}nav{display:flex;gap:22px;font-size:.81rem}nav a{color:var(--muted);text-decoration:none}.report-link{font:600 .75rem var(--mono);text-decoration:none;border:1px solid var(--ink);padding:10px 13px;border-radius:5px;white-space:nowrap;color:var(--ink)}.hero{padding:76px 0 55px}.hero-meta{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:28px;font:500 .73rem var(--mono);color:var(--muted)}.dot{display:inline-block;width:7px;height:7px;background:var(--teal);border-radius:50%;margin-right:7px}.hero h1 em{font-style:normal;color:var(--teal)}.hero-bottom{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center;margin-top:35px}.lede{font-size:1.16rem;line-height:1.7;max-width:550px}.recommend{border-left:3px solid var(--orange);padding-left:20px;font-size:.96rem}.hero-art{background:var(--ink);padding:18px 22px;border-radius:12px;box-shadow:var(--shadow);color:#dfe9e5}.hero-art figcaption{font:500 .68rem/1.7 var(--mono);color:#bfd2d0;margin-top:8px}.hero-art svg text{font-family:var(--mono)}figure{margin:0}.chapter{padding:64px 0;border-top:1px solid var(--line)}.section-heading{display:grid;grid-template-columns:64px 1fr;gap:10px;margin-bottom:30px}.section-number{font:500 1rem var(--mono);color:var(--orange);padding-top:9px}.intro{max-width:800px;font-size:1.02rem;color:var(--muted)}.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.status{background:var(--white);border:1px solid var(--line);border-radius:8px;padding:27px}.status .tag{display:inline-block;margin-bottom:14px;font:600 .7rem var(--mono);padding:4px 9px;border-radius:3px;background:var(--blue-light);color:var(--blue)}.status:nth-child(2) .tag{background:var(--teal-light);color:var(--teal)}.status ul{padding-left:19px;margin:15px 0}.status li{margin:7px 0}.note{padding:17px 20px;background:var(--orange-light);border-left:3px solid var(--orange);border-radius:0 5px 5px 0;font-size:.88rem;margin-top:24px}.footnote{font-size:.77rem;color:var(--muted);margin-top:14px}.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px}.tabs button,.presets button{border:1px solid var(--line);background:var(--white);padding:10px 17px;border-radius:5px;font-size:.86rem;font-weight:600}.tabs button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:white}.illustration{background:var(--white);padding:28px;border:1px solid var(--line);border-radius:8px}.illustration-head{display:flex;justify-content:space-between;align-items:center;gap:15px;margin-bottom:20px}.legend{display:flex;gap:16px;font-size:.73rem;flex-wrap:wrap}.legend span{display:flex;align-items:center;gap:6px}.swatch{display:inline-block;width:10px;height:10px;border-radius:2px}.p0{background:var(--teal-light);color:#005c53;border-color:#70b9a7!important}.p1{background:var(--orange-light);color:#963b1a;border-color:#d7a283!important}.p2{background:var(--blue-light);color:#294e91;border-color:#9ab1d7!important}.row-label{font:600 .73rem var(--mono);color:var(--muted);margin:16px 0 8px}.fragments{display:flex;gap:14px;flex-wrap:wrap}.fragment{border:1px solid var(--line);border-radius:5px;padding:10px;flex:1;min-width:130px}.fragment-title{font:500 .66rem var(--mono);color:var(--muted);margin-bottom:8px}.cells{display:flex;gap:5px}.cell{flex:1;min-width:23px;border:1px solid;border-radius:3px;text-align:center;font:600 .85rem/34px var(--mono)}.flow-arrow{font:500 .8rem var(--mono);text-align:center;color:var(--muted);margin:22px 0}.layout-caption{min-height:80px;margin:20px 0 0;font-size:.91rem;max-width:910px}.math-band{margin-top:30px;background:var(--ink);border-radius:7px;padding:23px;color:#f3f7f3;display:grid;grid-template-columns:1fr 1fr;gap:30px}.math-band code{background:transparent;padding:0;color:#98d9be;font-size:1rem}.math-band p{font-size:.81rem;color:#c1d0d0;margin:8px 0 0}.pipeline{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;margin:24px 0}.stage{position:relative;min-height:185px;padding:22px 15px;border:1px solid var(--line);border-radius:6px;background:var(--white)}.stage::after{content:'→';position:absolute;right:-12px;top:70px;z-index:1;color:var(--muted);background:var(--paper);font-size:18px;line-height:22px}.stage:last-child::after{display:none}.stage.accelerate{background:var(--teal-light);border-color:#7eb9a9}.stage .owner{font:600 .66rem var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:18px}.stage.accelerate .owner{color:#006357}.stage h3{font-size:1rem}.stage p{font-size:.79rem;margin:0}.pipeline-detail{padding:17px 20px;background:#e9ede7;border-radius:5px;font-size:.87rem;min-height:90px}.table-scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.86rem;text-align:left}th{font:600 .69rem var(--mono);text-transform:uppercase;color:var(--muted);border-bottom:2px solid var(--line);padding:12px}td{padding:16px 12px;border-bottom:1px solid var(--line);vertical-align:top}td:first-child{font-weight:600}table caption{text-align:left;font-size:.84rem;margin:15px 0;color:var(--muted)}.fit{font:600 .7rem var(--mono);white-space:nowrap}.fit.high{color:var(--teal)}.fit.med{color:#8e6014}.fit.low{color:var(--muted)}.arch{display:grid;grid-template-columns:1fr 1.4fr;gap:30px;margin:30px 0}.arch-host{background:var(--white);border:1px solid var(--line);padding:26px;border-radius:8px}.arch-device{border:1px solid #79b4a5;padding:26px;border-radius:8px;background:var(--teal-light)}.arch-label{font:600 .72rem var(--mono);text-transform:uppercase;letter-spacing:.08em;margin-bottom:20px}.engines{display:grid;grid-template-columns:1fr 1fr;gap:14px}.engine{background:#fffefaab;padding:19px 16px;border-radius:6px}.engine strong{display:block;font-size:1.25rem}.engine small{display:block;margin-top:8px}.transfer{border-top:1px dashed #8caf9e;margin-top:20px;padding-top:13px;font:500 .76rem/1.7 var(--mono)}.routes{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:27px}.route{border-top:3px solid var(--ink);padding-top:18px}.route .step{font:600 .68rem var(--mono);color:var(--orange);margin-bottom:12px}.route p{font-size:.87rem}.source{font-size:.75rem}.evidence-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}.evidence{border-top:1px solid var(--line);padding:24px 0}.evidence h3{font-size:1.12rem}.evidence p{font-size:.87rem}.result{font:700 2.2rem/1.15 var(--mono);color:var(--teal);margin:14px 0 8px;letter-spacing:-.06em}.result-label{font-size:.76rem;color:var(--muted);margin-bottom:14px}.evidence .caution{font-size:.77rem;color:var(--muted);border-left:2px solid var(--line);padding-left:12px}.calculator{display:grid;grid-template-columns:1fr 1.35fr;gap:40px;padding:32px;background:var(--white);border:1px solid var(--line);border-radius:8px}.controls label{display:block;font-size:.83rem;font-weight:600}.range-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:7px}.range-head output{font:600 .87rem var(--mono);color:var(--teal)}.control{margin-bottom:25px}.control p{font-size:.75rem;color:var(--muted);margin:6px 0 0}.control input{width:100%;accent-color:var(--teal);cursor:pointer;min-height:26px}.presets{display:flex;flex-wrap:wrap;gap:7px;margin-top:18px}.presets button{font-size:.72rem;padding:7px 10px}.speed-number{font:700 clamp(2.8rem,6vw,4.3rem)/1 var(--mono);letter-spacing:-.07em;color:var(--teal)}.speed-label{font-size:.78rem;color:var(--muted);margin:8px 0 25px}.time-row{margin-bottom:16px}.time-header{display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:7px}.bar{height:28px;width:100%;display:flex;background:#f1f0e9;border-radius:4px;overflow:hidden}.bar>span{height:100%;transition:width .2s}.unchanged{background:#9aaeb3}.compute{background:var(--teal)}.overhead{background:#c86b39}.calc-legend{margin-top:20px}.formula{padding:13px;background:#eef1eb;border-radius:5px;font:500 .75rem/1.9 var(--mono);margin-top:22px}.model-readout{font-size:.82rem;margin-top:15px;min-height:58px}.curve{margin-top:22px;border-top:1px solid var(--line);padding-top:17px}.curve svg{width:100%;display:block}.curve figcaption{font-size:.72rem;color:var(--muted)}.size-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:27px}.size{padding:20px 0;border-top:2px solid var(--line)}.size strong{display:block;font:600 1.7rem var(--mono);margin-bottom:8px}.size p{font-size:.8rem;margin:0;color:var(--muted)}.steps{counter-reset:step;display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin:25px 0}.next-step{border-top:1px solid var(--line);padding-top:20px}.next-step::before{counter-increment:step;content:'0' counter(step);font:500 .8rem var(--mono);color:var(--orange);display:block;margin-bottom:14px}.next-step p{font-size:.86rem}.next-step .deliverable{font-size:.77rem;color:var(--teal);font-weight:600}details{border-top:1px solid var(--line);padding:18px 0}summary{cursor:pointer;font-weight:650;font-size:.94rem}details p{font-size:.85rem;margin:15px 0 0;max-width:900px}footer{padding:38px 0 50px;background:var(--ink);color:#c4d3d4;font-size:.8rem}footer .wrap{display:flex;justify-content:space-between;gap:30px;flex-wrap:wrap}footer a{color:#9addbf}footer p{margin:0;max-width:730px}noscript{display:block;background:var(--orange-light);padding:18px}.no-js-only{font-size:.85rem}.print-only{display:none}
+    footer code{color:var(--ink)}
+    @media(max-width:960px){nav{gap:14px}nav a:nth-child(2){display:none}.hero-bottom{gap:30px}.pipeline{grid-template-columns:repeat(3,1fr)}.stage::after{display:none}.calculator{gap:25px;padding:25px}.arch{grid-template-columns:1fr 1.25fr}.routes{gap:17px}}
+    @media(max-width:700px){.wrap{width:calc(100% - 32px)}.topbar .wrap{min-height:62px;gap:10px}nav{display:none}.report-link{font-size:.68rem;padding:9px}.hero{padding:43px 0 38px}.hero-bottom,.status-grid,.arch,.calculator,.evidence-grid,.routes,.steps{grid-template-columns:1fr}.hero-bottom{gap:24px;margin-top:25px}.hero-art{padding:12px}.lede{font-size:1.05rem}.chapter{padding:42px 0}.section-heading{grid-template-columns:35px 1fr;gap:8px}.section-number{font-size:.8rem}.intro{font-size:.92rem}.status{padding:22px}.illustration{padding:18px}.illustration-head{align-items:flex-start;flex-direction:column}.fragments{gap:8px}.fragment{min-width:150px}.cell{min-width:20px}.math-band{grid-template-columns:1fr;gap:15px;padding:20px}.pipeline{grid-template-columns:1fr 1fr}.stage{min-height:160px}.pipeline .stage:last-child{grid-column:1/-1;min-height:110px}.engines{gap:10px}.engine{padding:15px 12px}.size-grid{grid-template-columns:1fr;gap:0}.size{display:grid;grid-template-columns:140px 1fr;gap:15px}.size strong{font-size:1.4rem}.calculator{padding:20px}.layout-caption{min-height:0}.tabs button{font-size:.78rem;padding:9px 12px}.table-scroll th,.table-scroll td{min-width:120px}td:last-child{min-width:230px}.calc-legend{gap:10px}.steps{gap:16px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.bar>span{transition:none}}
+    @media print{body{background:white;font-size:10pt;color:#000}.wrap{width:100%}.topbar{position:static;background:white}.topbar nav,.report-link,.tabs,.presets,.control input{display:none}.hero{padding:20px 0}.chapter{padding:25px 0;break-inside:auto}h1{font-size:35pt}h2{font-size:24pt}.hero-bottom{gap:20px}.hero-art,.math-band,footer{print-color-adjust:exact;-webkit-print-color-adjust:exact}.status,.illustration,.calculator,.evidence,.arch{break-inside:avoid}.bar,.stage,.cell{print-color-adjust:exact;-webkit-print-color-adjust:exact}.print-only{display:block;font-size:9pt}.hero-art svg{max-height:210px}.table-scroll{overflow:visible}details{break-inside:avoid}footer{background:white;color:#000;border-top:1px solid #ccc}footer a{color:#000}a{color:inherit}h2,h3{break-after:avoid}}
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="wrap">
+      <a href="#main" class="brand">LANCE <span>× ASCEND</span></a>
+      <nav aria-label="Guide navigation"><a href="#state">Current state</a><a href="#layout">Clustering</a><a href="#ascend">Ascend</a><a href="#evidence">Evidence</a><a href="#model">Speedup model</a></nav>
+      <a class="report-link" href="lance-clustering-npu-ascend-research.md">Full research ↗</a>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-meta"><span><span class="dot"></span>RESEARCH GUIDE / 30 OCT 2026</span><span>LOCAL BASELINE: LANCE 14.0.2</span></div>
+      <h1 id="hero-title">Where an NPU can<br><em>make clustering faster.</em></h1>
+      <div class="hero-bottom">
+        <div>
+          <p class="lede">The promising work is dense vector arithmetic: finding centroids, assigning rows, and encoding vectors. The full job also has to read, move, and write data.</p>
+          <p class="recommend"><strong>Start with batched assignment.</strong><br>Prove the compute benefit, hand standard artifacts back to Lance, then measure the complete build or rewrite.</p>
+          <p class="small muted">A source-based feasibility study. The diagrams are illustrative; no new hardware benchmark was run.</p>
+        </div>
+        <figure class="hero-art">
+          <svg viewBox="0 0 490 220" role="img" aria-labelledby="matrix-title matrix-desc">
+            <title id="matrix-title">Dense vectors become compact partition labels</title><desc id="matrix-desc">An 8192 by 768 vector batch is multiplied by 768 by 4096 transposed centroids. Tiled distance calculation and argmin return 8192 partition labels to Lance.</desc>
+            <defs><pattern id="matrix-grid" width="13" height="13" patternUnits="userSpaceOnUse"><rect x="1" y="1" width="10" height="10" rx="1" fill="#62bba1" opacity=".7"/></pattern><pattern id="centroid-grid" width="13" height="13" patternUnits="userSpaceOnUse"><rect x="1" y="1" width="10" height="10" rx="1" fill="#e8af85" opacity=".85"/></pattern><marker id="arrow-tip" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="#aac4c4"/></marker></defs>
+            <text x="14" y="22" fill="#c9dbd8" font-size="10" letter-spacing="2">ASSIGNMENT / ILLUSTRATIVE BATCH</text>
+            <rect x="14" y="47" width="105" height="105" fill="url(#matrix-grid)"/><text x="45" y="178" fill="#e4eeeb" font-size="13">X</text><text x="12" y="197" fill="#a8c2bf" font-size="10">8192 × 768</text>
+            <text x="134" y="106" fill="#e4eeeb" font-size="22">×</text><rect x="165" y="60" width="130" height="78" fill="url(#centroid-grid)"/><text x="220" y="178" fill="#e4eeeb" font-size="13">Cᵀ</text><text x="191" y="197" fill="#a8c2bf" font-size="10">768 × 4096</text>
+            <path d="M310 100 H356" stroke="#aac4c4" stroke-width="1.5" marker-end="url(#arrow-tip)"/><text x="308" y="131" fill="#a8c2bf" font-size="9">tile +</text><text x="308" y="144" fill="#a8c2bf" font-size="9">argmin</text>
+            <rect x="379" y="48" width="89" height="105" rx="5" fill="#294650"/><text x="392" y="71" fill="#99d8bd" font-size="12">12</text><text x="392" y="93" fill="#e8af85" font-size="12">408</text><text x="392" y="115" fill="#9dbde9" font-size="12">3</text><text x="392" y="139" fill="#c9dbd8" font-size="12">…</text><text x="376" y="178" fill="#e4eeeb" font-size="12">labels</text><text x="376" y="197" fill="#a8c2bf" font-size="10">8192 × 1</text>
+          </svg>
+          <figcaption>Keep centroids resident. Stream vectors. Return labels.<br>Do not materialize the dataset-wide distance matrix.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="state" class="chapter" aria-labelledby="state-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">01</span><div><div class="eyebrow">Know the baseline</div><h2 id="state-title">The format and the engine<br>are at different stages.</h2><p class="intro">The latest local plan explains IVF partitioning and physical reorganization. Upstream has since added provider metadata and compaction hooks. Neither fact establishes a ready-made Ascend clustering engine.</p></div></div>
+      <div class="status-grid">
+        <article class="status"><span class="tag">THIS CHECKOUT · v14.0.2</span><h3>Useful building blocks</h3><ul><li>CPU IVF training, assignment, and quantization.</li><li>CUDA/MPS acceleration for Python IVF_PQ builds.</li><li>External centroids and PQ codebooks.</li><li>Rust stable-partition rewrites with tagged FRI on address-based tables.</li></ul><p class="small"><strong>Missing:</strong> native Ascend integration and a turnkey physical clustering API. New provider metadata is specified but writer-gated here.</p><a class="source" href="docs/lance-partitioning-and-s3-reorganization.md">Latest local plan ↗</a></article>
+        <article class="status"><span class="tag">UPSTREAM · OCT 28–29, 2026</span><h3>The provider foundation is advancing</h3><ul><li><a href="https://github.com/lance-format/lance/pull/10383">#10383</a>: metadata runtime support merged.</li><li><a href="https://github.com/lance-format/lance/pull/10409">#10409</a>: compaction output properties merged.</li><li><a href="https://github.com/lance-format/lance/pull/10445">#10445</a>: explicit compaction groups merged.</li></ul><p class="small">The <a href="https://github.com/lance-format/lance/discussions/8921">scalar liquid-clustering proposal</a> is a separate design. These runtime hooks let providers describe and maintain layouts; they do not select an NPU algorithm.</p><a class="source" href="lance-clustering-npu-ascend-research.md#2-latest-clustering-plans-and-implementation-status">Version-by-version evidence ↗</a></article>
+      </div>
+      <div class="note"><strong>Device names matter.</strong> <code>accelerator="npu"</code> is not supported by this checkout's normal accelerated builder. MPS is an Apple GPU path, not Neural Engine support. <a href="../python/python/lance/vector.py">Source</a></div>
+    </div></section>
+
+    <section id="layout" class="chapter" aria-labelledby="layout-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">02</span><div><div class="eyebrow">Two different outcomes</div><h2 id="layout-title">Index grouping is not<br>base-row movement.</h2><p class="intro">These twelve illustrative rows belong to three vector partitions. Switch the operation to see what changes on disk.</p></div></div>
+      <div class="tabs" role="group" aria-label="Choose the illustrated operation"><button type="button" data-layout="index" aria-pressed="true">Build an IVF index</button><button type="button" data-layout="rewrite" aria-pressed="false">Rewrite base rows</button></div>
+      <div class="illustration">
+        <div class="illustration-head"><h3 style="margin:0">One assignment, two uses</h3><div class="legend"><span><i class="swatch p0"></i>Partition 0</span><span><i class="swatch p1"></i>Partition 1</span><span><i class="swatch p2"></i>Partition 2</span></div></div>
+        <div class="row-label">SOURCE ROWS · APPLICATION LABELS A–L</div>
+        <div class="fragments" id="source-rows">
+          <div class="fragment"><div class="fragment-title">Source fragment 0</div><div class="cells"><span class="cell p1">A</span><span class="cell p0">B</span><span class="cell p2">C</span><span class="cell p0">D</span><span class="cell p1">E</span><span class="cell p2">F</span></div></div>
+          <div class="fragment"><div class="fragment-title">Source fragment 1</div><div class="cells"><span class="cell p0">G</span><span class="cell p2">H</span><span class="cell p1">I</span><span class="cell p0">J</span><span class="cell p2">K</span><span class="cell p1">L</span></div></div>
+        </div>
+        <div class="flow-arrow" id="layout-action">↓ compute partition labels · build index storage</div>
+        <div class="row-label" id="group-label">INDEX ENTRIES · GROUPED BY PARTITION</div>
+        <div class="fragments">
+          <div class="fragment"><div class="fragment-title" data-group-title="0">Index partition 0</div><div class="cells"><span class="cell p0">B</span><span class="cell p0">D</span><span class="cell p0">G</span><span class="cell p0">J</span></div></div>
+          <div class="fragment"><div class="fragment-title" data-group-title="1">Index partition 1</div><div class="cells"><span class="cell p1">A</span><span class="cell p1">E</span><span class="cell p1">I</span><span class="cell p1">L</span></div></div>
+          <div class="fragment"><div class="fragment-title" data-group-title="2">Index partition 2</div><div class="cells"><span class="cell p2">C</span><span class="cell p2">F</span><span class="cell p2">H</span><span class="cell p2">K</span></div></div>
+        </div>
+        <p id="layout-caption" class="layout-caption" aria-live="polite"><strong>The base fragments keep their original rows.</strong> Grouped index entries point back to those rows. Refinement or payload retrieval may still read scattered base pages.</p>
+      </div>
+      <p class="footnote">For illustration, each partition maps to one destination in rewrite mode. A real partition may span many fragments. Stable FRI routing preserves each destination's source subsequence; it cannot express an arbitrary order inside that destination. <a href="docs/lance-partitioning-and-s3-reorganization.md#stable-partition-with-fri">Mapping contract</a></p>
+      <div class="math-band"><div><code>aᵢ = argminⱼ ‖xᵢ − cⱼ‖²</code><p>Vector assignment: dense, repetitive arithmetic. A strong NPU candidate.</p></div><div><code>rows → route → encode → upload → commit</code><p>Physical clustering: storage and coordination remain part of the job.</p></div></div>
+    </div></section>
+
+    <section id="workloads" class="chapter" aria-labelledby="work-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">03</span><div><div class="eyebrow">Find the expensive stage</div><h2 id="work-title">Accelerate the right calculation.</h2><p class="intro">Green stages are proposed NPU candidates. Select a workload to see where that candidate sits in the complete pipeline.</p></div></div>
+      <div class="tabs" role="group" aria-label="Choose workload pipeline"><button type="button" data-workload="build" aria-pressed="true">Vector index build</button><button type="button" data-workload="physical" aria-pressed="false">Vector row clustering</button><button type="button" data-workload="scalar" aria-pressed="false">Scalar liquid clustering</button></div>
+      <div id="pipeline" class="pipeline" aria-label="Workload stages">
+        <div class="stage"><div class="owner">CPU + storage</div><h3>Sample &amp; decode</h3><p>Read valid vectors from a pinned snapshot.</p></div>
+        <div class="stage accelerate"><div class="owner">NPU candidate</div><h3>Train models</h3><p>Repeated distances, assignments, centroid updates.</p></div>
+        <div class="stage accelerate"><div class="owner">NPU candidate</div><h3>Assign &amp; encode</h3><p>Centroid labels, residuals, PQ codes.</p></div>
+        <div class="stage"><div class="owner">CPU + storage</div><h3>Shuffle &amp; write</h3><p>Build standard partition and index files.</p></div>
+        <div class="stage"><div class="owner">Lance core</div><h3>Validate &amp; commit</h3><p>Publish correct model and fragment coverage.</p></div>
+      </div>
+      <div class="pipeline-detail" id="pipeline-detail" aria-live="polite">Start with fixed-centroid assignment. Then add training and PQ work. The local CPU baseline already uses parallel kernels and hierarchical/coreset strategies, so compare equal quality and the complete build.</div>
+      <div class="table-scroll" style="margin-top:25px"><table><caption>Engineering suitability assessment, not a measured speedup ranking.</caption><thead><tr><th scope="col">Calculation</th><th scope="col">Fit</th><th scope="col">Why / condition</th></tr></thead><tbody>
+        <tr><td>Batched vector-to-centroid distances</td><td><span class="fit high">HIGH</span></td><td>Matrix multiplication plus norms and argmin; reuse resident centroids.</td></tr>
+        <tr><td>PQ training and encoding</td><td><span class="fit high">HIGH / MEDIUM</span></td><td>Group small subspace problems into large batches; fuse selection.</td></tr>
+        <tr><td>Centroid sums, counts, normalization</td><td><span class="fit med">MEDIUM</span></td><td>Reductions and scatter can replace matrix work as the bottleneck.</td></tr>
+        <tr><td>RaBitQ transforms and code scans</td><td><span class="fit med">CONDITIONAL</span></td><td>Dense rotations differ from Lance's fast butterfly rotation. Gathers/bit operations need suitable kernels.</td></tr>
+        <tr><td>HNSW traversal or small reranking</td><td><span class="fit low">LOW INITIALLY</span></td><td>Irregular reads and transfer overhead; batch independent distances where useful.</td></tr>
+        <tr><td>Curve keys, sorting, S3 writes, commits</td><td><span class="fit low">PROFILE FIRST</span></td><td>Low-dimensional scalar work and data movement have little direct benefit from matrix engines.</td></tr>
+      </tbody></table></div>
+    </div></section>
+
+    <section id="ascend" class="chapter" aria-labelledby="ascend-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">04</span><div><div class="eyebrow">The Ascend path</div><h2 id="ascend-title">Keep the storage contract in Lance.</h2><p class="intro">Offload bounded tensor work. Keep model identity, row IDs, ordering, serialized formats, and publication under the storage engine's control.</p></div></div>
+      <div class="arch">
+        <div class="arch-host"><div class="arch-label">Host · Lance / Rust</div><h3>Rows and durable state</h3><p class="small">Scan and decode. Preserve row identity. Restore source order. Write standard artifacts. Validate coverage and commit.</p><div class="transfer">→ vectors + model<br>← labels / codes + completion</div></div>
+        <div class="arch-device"><div class="arch-label">Ascend · proposed compute backend</div><div class="engines"><div class="engine"><strong>AIC / Cube</strong><small>Tiled matrix multiplication<br>Supported dense transforms</small></div><div class="engine"><strong>AIV / Vector</strong><small>Norms and residuals<br>Masking, reductions, selection</small></div></div><div class="transfer">Persistent model · reusable workspace · bounded batches<br>Exact engine capabilities depend on the selected device.</div></div>
+      </div>
+      <p class="footnote">Architecture basis: <a href="https://www.hiascend.com/document/detail/en/CANNCommunityEdition/910/programug/Ascendcopdevg/docs/en/guide/operator_practice/simd_operator_impl/matrix_basic_api/decoupled_mode.md">official Ascend C documentation</a>. The host/backend split is a recommendation.</p>
+      <div class="routes">
+        <article class="route"><div class="step">01 / PROVE THE WORKLOAD</div><h3>TorchNPU</h3><p>Prototype distances and assignments in eager mode. Validate operators, precision, and transfers. Export centroids for Lance. Evaluate TorchAir compilation separately.</p><a class="source" href="https://github.com/Ascend/pytorch">TorchNPU ↗</a> · <a class="source" href="https://github.com/Ascend/torchair">TorchAir ↗</a></article>
+        <article class="route"><div class="step">02 / CHECK PACKAGED COVERAGE</div><h3>Index SDK</h3><p>Faiss-style retrieval APIs offer an existing NPU implementation. Verify supported dimensions, metrics, hardware, and training mode before selecting it.</p><a class="source" href="https://github.com/Ascend/IndexSDK">Official repository ↗</a></article>
+        <article class="route"><div class="step">03 / OPTIMIZE MEASURED GAPS</div><h3>CAN / Ascend C</h3><p>Implement focused tiled and fused kernels if the prototype proves value. Preserve Lance codebook, rotation, label, and index semantics.</p><a class="source" href="lance-clustering-npu-ascend-research.md#5-ascend-execution-model-and-integration-choices">Integration analysis ↗</a></article>
+      </div>
+      <div class="note"><strong>A practical SDK constraint:</strong> the inspected IVF-PQ API lists dimension 128, L2, 8-bit PQ, and top-k ≤ 320. Its 26.2.0 release notes identify Atlas A3 inference / Atlas 950PR support. A 768-dimensional workload needs a separately validated path. <a href="https://github.com/Ascend/IndexSDK/blob/6d12b194b5fdad55a50ae56d01a5514e75f1b2ad/docs/en/api/02_approximate_retrieval/15_AscendIndexIVFPQ.md">API constraints</a> · <a href="https://github.com/Ascend/IndexSDK/blob/6d12b194b5fdad55a50ae56d01a5514e75f1b2ad/docs/en/release_notes_index.md">Release notes</a></div>
+      <p class="footnote">The SDK installation guide and release notes list different CAN versions; choose a validated package/device tuple. The report records this and other documentation discrepancies.</p>
+    </div></section>
+
+    <section id="evidence" class="chapter" aria-labelledby="evidence-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">05</span><div><div class="eyebrow">Evidence from other systems</div><h2 id="evidence-title">The opportunity is real.<br>The ratios belong to each benchmark.</h2><p class="intro">These are published results, not measurements of Lance. Different workloads and baselines make a shared “winner” chart misleading.</p></div></div>
+      <div class="evidence-grid">
+        <article class="evidence"><h3>Ascend-RaBitQ · 2026 preprint</h3><div class="result">62.84×</div><div class="result-label">Cohere 10M build · versus CPU 1-bit IVF-RaBitQ</div><p>Author-reported result. Other datasets differ substantially.</p><p class="caution">No Lance/S3 measurement; see the report for hardware, baselines, and limitations.</p><a class="source" href="https://arxiv.org/html/2605.16007v2">Paper, Table 1 ↗</a></article>
+        <article class="evidence"><h3>GaussDB-Vector · VLDB 2025</h3><div class="result">1–2 orders</div><div class="result-label">Reported NPU gain · building and IVF scans</div><p>Figure 15 plots IVF and graph index build times. The paper also reports little benefit for graph search, where transformation overhead matters.</p><p class="caution">This range is the authors' characterization, not a universal multiplier.</p><a class="source" href="https://www.vldb.org/pvldb/vol18/p4951-sun.pdf#page=12">Paper, §7.6 / Figure 15 ↗</a></article>
+        <article class="evidence"><h3>NVIDIA cuVS · GPU analogue</h3><div class="result">14× / &gt;20×</div><div class="result-label">Reported build / search gains over CPU</div><p>The IVF-Flat article reports the search gain at 0.95 recall. Tensor cores, hierarchical training, layout, and fused selection contribute.</p><p class="caution">A 2023 vendor benchmark; it does not isolate a device swap in Lance.</p><a class="source" href="https://developer.nvidia.com/blog/accelerated-vector-search-approximating-with-nvidia-cuvs-ivf-flat/">Primary benchmark article ↗</a></article>
+        <article class="evidence"><h3>TPU-KNN · design lesson</h3><div class="result" style="font-size:1.65rem">Selection matters</div><div class="result-label">TPU v3/v4 · comparisons with Faiss GPU methods</div><p>High matrix throughput alone is insufficient. The paper evaluates approximate selection and recall-speed behavior, including instruction bottlenecks.</p><p class="caution">An algorithmic example, not an exact-assignment replacement or a Lance speedup estimate.</p><a class="source" href="https://arxiv.org/pdf/2206.14286v2">Primary paper ↗</a></article>
+      </div>
+    </div></section>
+
+    <section id="model" class="chapter" aria-labelledby="model-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">06</span><div><div class="eyebrow">An interactive planning model</div><h2 id="model-title">A 20× kernel is not a 20× job.</h2><p class="intro">Change the portion of the job that can be accelerated, the acceleration of that portion, and the extra overhead. All values below are hypothetical.</p></div></div>
+      <noscript>The static example is 70% accelerable work, 20× stage speedup, and 5% extra overhead: 2.60× total speedup. Enable JavaScript to change scenarios and diagrams. All report content remains accessible.</noscript>
+      <div class="calculator">
+        <div class="controls">
+          <div class="control"><div class="range-head"><label for="share">Accelerable share of original time</label><output id="share-value" for="share">70%</output></div><input id="share" type="range" min="0" max="100" step="1" value="70"><p>The rest still takes its original time.</p></div>
+          <div class="control"><div class="range-head"><label for="factor">Speedup of the accelerated stage</label><output id="factor-value" for="factor">20×</output></div><input id="factor" type="range" min="1" max="100" step="1" value="20"><p>Include reductions and selection, not just GEMM.</p></div>
+          <div class="control"><div class="range-head"><label for="extra">Additional overhead</label><output id="extra-value" for="extra">5%</output></div><input id="extra" type="range" min="0" max="30" step="1" value="5"><p>Added transfers/setup/synchronization, as a share of the original job.</p></div>
+          <div class="presets" role="group" aria-label="Hypothetical scenario presets"><button type="button" data-preset="io">I/O-heavy</button><button type="button" data-preset="balanced">Mixed job</button><button type="button" data-preset="compute">Compute-heavy</button></div>
+          <div class="formula">total speedup = 1 / (1 − p + p/s + h)<br>p = accelerable share · s = stage speedup<br>h = additional overhead / original time</div>
+        </div>
+        <div>
+          <div role="status" aria-live="polite" aria-atomic="true"><div id="speedup" class="speed-number">2.60×</div><p class="speed-label">Calculated total speedup · hypothetical</p></div>
+          <div class="time-row"><div class="time-header"><span>Original job</span><span>100 time units</span></div><div class="bar" role="img" aria-label="Original job: 70 units accelerable, 30 units unchanged"><span id="old-compute" class="compute" style="width:70%"></span><span id="old-rest" class="unchanged" style="width:30%"></span></div></div>
+          <div class="time-row"><div class="time-header"><span>With acceleration</span><output id="new-time">38.5 time units</output></div><div class="bar" id="new-bar" role="img" aria-label="Accelerated job: 3.5 units compute, 30 units unchanged, 5 units added overhead"><span id="new-compute" class="compute" style="width:3.5%"></span><span id="new-rest" class="unchanged" style="width:30%"></span><span id="new-extra" class="overhead" style="width:5%"></span></div></div>
+          <div class="legend calc-legend"><span><i class="swatch compute"></i>Accelerable work</span><span><i class="swatch unchanged"></i>Unchanged work</span><span><i class="swatch overhead"></i>Added overhead</span></div>
+          <p class="model-readout" id="model-readout">With infinitely fast device work, this scenario still caps at <strong>2.86×</strong>. The remaining work and overhead set the limit.</p>
+          <figure class="curve"><svg id="speed-curve" viewBox="0 0 520 230" role="img" aria-labelledby="curve-title curve-desc"><title id="curve-title">Total job speedup as stage speedup grows</title><desc id="curve-desc">Interactive Amdahl curve for the selected fraction and overhead. The current operating point is marked.</desc></svg><figcaption>Horizontal: accelerated-stage speedup (1–100×). Vertical: total speedup. The marker follows the selected stage speedup.</figcaption></figure>
+        </div>
+      </div>
+      <p class="footnote">This is a serial cost model. Real pipelines may overlap stages; measure the slowest stage, fill/drain time, and resource contention. Repeated transfers must be counted wherever they occur.</p>
+      <div class="size-grid"><div class="size"><strong>307.2 GB</strong><p>100M × 768 FP32 vector values. The corpus must still be read.</p></div><div class="size"><strong>128 MiB</strong><p>Scores for one 8192 × 4096 FP32 batch. Tile to reduce workspace.</p></div><div class="size"><strong>0.4 GB</strong><p>100M uint32 assignment labels. Compact results reduce return traffic.</p></div></div>
+      <p class="footnote">Calculated sizes only. Row IDs, runtime workspace, copies, and storage metadata add memory. The v14 precomputed-map loader uses a hash map, so the 0.4-GB label payload is not its RAM requirement.</p>
+    </div></section>
+
+    <section id="next" class="chapter" aria-labelledby="next-title"><div class="wrap">
+      <div class="section-heading"><span class="section-number">07</span><div><div class="eyebrow">A testable path forward</div><h2 id="next-title">Prove value before expanding scope.</h2><p class="intro">A useful first result is a correct, bounded assignment backend with a measured crossover point. Physical clustering and query serving can follow independently.</p></div></div>
+      <div class="steps"><article class="next-step"><h3>Profile &amp; qualify</h3><p>Pin the Lance commit and device/software tuple. Measure the optimized CPU pipeline. Test real dimensions, null/invalid inputs, and fixed-centroid agreement.</p><div class="deliverable">Output: stage timings + capability matrix</div></article><article class="next-step"><h3>Build standard artifacts</h3><p>Train externally, export compatible models, and let Lance finalize. Compare complete build time and matched-recall query performance on a CPU reader.</p><div class="deliverable">Output: usable index + quality/cost result</div></article><article class="next-step"><h3>Integrate row routing</h3><p>Use a supported stable-partition rewrite or rebuild strategy. Validate multi-fragment values, row IDs, ordering, coverage, and atomic publication.</p><div class="deliverable">Output: correct rewrite + measured locality</div></article></div>
+      <details><summary>Which invariants can an accelerator never relax?</summary><p>Snapshot identity; model/segment identity; metric and preprocessing; uint64 row identity; vector eligibility; valid codebook/rotation layout; stable destination order where FRI requires it; complete index coverage; and atomic publication. Reduced precision is an explicit quality experiment, not permission to lose rows.</p></details>
+      <details><summary>Why not move the whole index onto the NPU immediately?</summary><p>That adds memory residency, filtering, deletion, fallback, serialization, and serving latency concerns before proving the arithmetic benefit. Start with build-time outputs that Lance already understands. <a href="https://github.com/lance-format/lance-cuvs">lance-cuvs</a> is a useful external-backend precedent, with its own required Lance API baseline.</p></details>
+      <details><summary>Does stable FRI routing work on every Lance table?</summary><p>No. The inspected v14 tagged path accepts address-based tables and rejects stable-row-ID tables. Destination labels preserve the source subsequence within each destination. Arbitrary sorting requires a suitable alternative mapping or index rebuild. See the <a href="docs/lance-partitioning-and-s3-reorganization.md#current-support-boundaries">local support boundaries</a>.</p></details>
+      <details><summary>What would justify production work?</summary><p>Meaningful complete-job acceleration or cost savings at the required recall, bounded host/device memory, and a correct standard Lance result. The report proposes 2× complete-job speedup as an experimental decision target, not a prediction. Record p95/p99 latency and storage traffic when evaluating serving or physical locality.</p></details>
+      <p style="margin:30px 0 0"><a class="report-link" href="lance-clustering-npu-ascend-research.md">Read the comprehensive report and source register ↗</a></p>
+    </div></section>
+  </main>
+  <footer><div class="wrap"><p><strong>Lance × Ascend research guide</strong><br>30 October 2026 · local checkout <code>72c65d07f</code> / Lance 14.0.2.<br>Published measurements retain their original baselines. Interactive values are hypothetical. This file works offline; source links require a connection.</p><a href="lance-clustering-npu-ascend-research.md">Markdown report ↗</a></div></footer>
+  <script>
+    'use strict';
+    const layoutButtons = document.querySelectorAll('[data-layout]');
+    layoutButtons.forEach(button => button.addEventListener('click', () => {
+      const isRewrite = button.dataset.layout === 'rewrite';
+      layoutButtons.forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+      document.getElementById('layout-action').textContent = isRewrite
+        ? '↓ compute labels · stable routing · write new fragments + FRI · atomic commit'
+        : '↓ compute partition labels · build index storage';
+      document.getElementById('group-label').textContent = isRewrite
+        ? 'NEW BASE FRAGMENTS · SOURCE ORDER PRESERVED WITHIN EACH DESTINATION'
+        : 'INDEX ENTRIES · GROUPED BY PARTITION';
+      document.querySelectorAll('[data-group-title]').forEach(item => {
+        const partition = Number(item.dataset.groupTitle);
+        item.textContent = isRewrite ? `Destination ${partition} · fragment ${partition + 4}` : `Index partition ${partition}`;
+      });
+      document.getElementById('layout-caption').innerHTML = isRewrite
+        ? '<strong>Base rows now live in new destination fragments.</strong> Each destination keeps its source subsequence: B→D→G→J, A→E→I→L, C→F→H→K. A valid FRI transition can translate existing index addresses. This needs a Rust integration in the inspected checkout; new data objects must be written.'
+        : '<strong>The base fragments keep their original rows.</strong> Grouped index entries point back to those rows. Refinement or payload retrieval may still read scattered base pages.';
+    }));
+
+    const workloads = {
+      build: {
+        stages: [['CPU + storage','Sample & decode','Read valid vectors from a pinned snapshot.',false],['NPU candidate','Train models','Repeated distances, assignments, centroid updates.',true],['NPU candidate','Assign & encode','Centroid labels, residuals, PQ codes.',true],['CPU + storage','Shuffle & write','Build standard partition and index files.',false],['Lance core','Validate & commit','Publish correct model and fragment coverage.',false]],
+        detail: "Start with fixed-centroid assignment. Then add training and PQ work. The local CPU baseline already uses parallel kernels and hierarchical/coreset strategies, so compare equal quality and the complete build."
+      },
+      physical: {
+        stages: [['Lance core','Pin & select','Choose snapshot, fragments, model, and destination policy.',false],['CPU + storage','Read source rows','Decode live values; preserve identity and source sequence.',false],['NPU candidate','Assign labels','Compute vector membership under the correct model.',true],['CPU + storage','Route & rewrite','Restore source order; write destination files and row map.',false],['Lance core','Validate & commit','Atomically publish the supported rewrite and mapping.',false]],
+        detail: 'NPU output is a routing decision. Source-relative order, deleted/null rows, existing index coverage, and FRI publication still require host-side work. Measure cold payload reads after clustering as well as the cost of the rewrite.'
+      },
+      scalar: {
+        stages: [['CPU + storage','Sample keys','Fit task-wide coordinate/rank mapping.',false],['Profile first','Encode curve','Generate Hilbert or Z-order keys from scalar columns.',false],['CPU / engine','Sort & shuffle','Bound memory and spill; distribute work where needed.',false],['CPU + storage','Write layout','Create new fragments with useful value locality.',false],['Lance + provider','Maintain metadata','Track layout and refresh supported zone-map coverage.',false]],
+        detail: 'This is the proposed scalar liquid-clustering path, not an IVF pipeline. Low-dimensional key arithmetic and sorting are less natural targets for matrix hardware. Establish a CPU/distributed baseline before choosing NPU work.'
+      }
+    };
+    const workloadButtons = document.querySelectorAll('[data-workload]');
+    workloadButtons.forEach(button => button.addEventListener('click', () => {
+      workloadButtons.forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+      const workload = workloads[button.dataset.workload];
+      const pipeline = document.getElementById('pipeline');
+      pipeline.replaceChildren(...workload.stages.map(([owner,title,description,accelerate]) => {
+        const stage = document.createElement('div');
+        stage.className = `stage${accelerate ? ' accelerate' : ''}`;
+        const ownerElement = document.createElement('div');
+        ownerElement.className = 'owner'; ownerElement.textContent = owner;
+        const heading = document.createElement('h3'); heading.textContent = title;
+        const text = document.createElement('p'); text.textContent = description;
+        stage.append(ownerElement, heading, text); return stage;
+      }));
+      document.getElementById('pipeline-detail').textContent = workload.detail;
+    }));
+
+    const share = document.getElementById('share');
+    const factor = document.getElementById('factor');
+    const extra = document.getElementById('extra');
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    function drawCurve(p, s, h) {
+      const svg = document.getElementById('speed-curve');
+      svg.querySelectorAll('.plot-element').forEach(element => element.remove());
+      const left = 47, right = 505, top = 15, bottom = 185;
+      const speed = value => 1 / (1 - p + p / value + h);
+      const ymax = Math.max(2, Math.ceil(speed(100) * 1.08));
+      const x = value => left + (value - 1) / 99 * (right - left);
+      const y = value => bottom - value / ymax * (bottom - top);
+      function element(tag, attributes, text) {
+        const item = document.createElementNS(svgNamespace, tag);
+        item.setAttribute('class', 'plot-element');
+        Object.entries(attributes).forEach(([name,value]) => item.setAttribute(name,String(value)));
+        if (text !== undefined) item.textContent = text;
+        svg.appendChild(item); return item;
+      }
+      for (let i = 0; i <= 4; i++) {
+        const value = ymax * i / 4;
+        element('line', {x1:left,y1:y(value),x2:right,y2:y(value),stroke:'#dce2dc','stroke-width':1});
+        element('text', {x:left-8,y:y(value)+4,'text-anchor':'end',fill:'#536671','font-size':10,'font-family':'monospace'}, `${Number(value.toFixed(1))}×`);
+      }
+      [1,20,50,100].forEach(value => element('text', {x:x(value),y:bottom+20,'text-anchor':'middle',fill:'#536671','font-size':10,'font-family':'monospace'},`${value}×`));
+      const path = Array.from({length:100}, (_,i) => `${i === 0 ? 'M' : 'L'}${x(i+1).toFixed(2)},${y(speed(i+1)).toFixed(2)}`).join(' ');
+      element('path', {d:path,fill:'none',stroke:'#087b70','stroke-width':2.5});
+      element('line', {x1:x(s),y1:y(speed(s)),x2:x(s),y2:bottom,stroke:'#b84825','stroke-dasharray':'3 4'});
+      element('circle', {cx:x(s),cy:y(speed(s)),r:5,fill:'#b84825',stroke:'#fffefa','stroke-width':2});
+      document.getElementById('curve-desc').textContent = `At ${p*100}% accelerable work and ${h*100}% added overhead, ${s} times stage speedup gives ${speed(s).toFixed(2)} times total speedup. The curve shows stage speedups from 1 to 100.`;
+    }
+    function updateModel() {
+      const p = Number(share.value) / 100;
+      const s = Number(factor.value);
+      const h = Number(extra.value) / 100;
+      const time = 1 - p + p/s + h;
+      const scale = Math.max(1, time);
+      document.getElementById('share-value').value = `${share.value}%`;
+      document.getElementById('factor-value').value = `${factor.value}×`;
+      document.getElementById('extra-value').value = `${extra.value}%`;
+      document.getElementById('speedup').textContent = `${(1/time).toFixed(2)}×`;
+      document.getElementById('new-time').value = `${(time*100).toFixed(1)} time units`;
+      const widths = {'old-compute':p,'old-rest':1-p,'new-compute':p/s,'new-rest':1-p,'new-extra':h};
+      Object.entries(widths).forEach(([id,value]) => document.getElementById(id).style.width = `${value/scale*100}%`);
+      document.getElementById('old-compute').parentElement.setAttribute('aria-label',`Original job: ${(p*100).toFixed(1)} units accelerable, ${((1-p)*100).toFixed(1)} units unchanged`);
+      document.getElementById('new-bar').setAttribute('aria-label',`Accelerated job: ${(p/s*100).toFixed(1)} units compute, ${((1-p)*100).toFixed(1)} units unchanged, ${(h*100).toFixed(1)} units added overhead`);
+      const floor = 1 - p + h;
+      const limit = floor > 0 ? `With infinitely fast device work, this scenario still caps at <strong>${(1/floor).toFixed(2)}×</strong>. The remaining work and overhead set the limit.` : 'With no unchanged work or extra overhead, total speedup equals stage speedup. This idealized scenario has no finite asymptotic cap.';
+      document.getElementById('model-readout').innerHTML = time > 1 ? `<strong>This scenario is slower overall.</strong> The added overhead exceeds the saved compute time. ${limit}` : limit;
+      drawCurve(p,s,h);
+    }
+    [share,factor,extra].forEach(input => input.addEventListener('input',updateModel));
+    const presets = {io:[30,20,5],balanced:[70,20,5],compute:[90,20,5]};
+    document.querySelectorAll('[data-preset]').forEach(button => button.addEventListener('click', () => {
+      const values = presets[button.dataset.preset];
+      [share,factor,extra].forEach((input,index) => input.value = values[index]);
+      updateModel();
+    }));
+    updateModel();
+  </script>
+</body>
+</html>
