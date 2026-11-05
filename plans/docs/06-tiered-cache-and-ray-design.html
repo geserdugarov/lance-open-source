@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Tiered index cache · Lance / Lance-Ray design review</title>
+  <style>
+    :root { --ink:#172b41; --muted:#53667a; --line:#d9e2e9; --paper:#f5f7f9; --white:#fff; --lance:#127967; --lance-bg:#e9f5ef; --lr:#2858bb; --lr-bg:#edf2ff; --ray:#6a5a8d; --ray-bg:#f1edf7; --warm:#995716; --warm-bg:#fff4e4; --red:#ac3b42; --shadow:0 8px 28px #19324b08; }
+    * { box-sizing:border-box; }
+    html { scroll-padding-top:84px; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--paper); color:var(--ink); line-height:1.6; }
+    a { color:var(--lr); text-underline-offset:3px; }
+    button,input,select,textarea { font:inherit; }
+    button,a,input,select,summary { outline-offset:4px; }
+    :focus-visible { outline:3px solid #3477e5; }
+    button { cursor:pointer; }
+    .skip { position:absolute; top:-100px; left:12px; background:white; padding:12px; z-index:99; }
+    .skip:focus { top:12px; }
+    .topbar { position:sticky; top:0; z-index:10; border-bottom:1px solid var(--line); background:#fffffffa; backdrop-filter:blur(10px); }
+    .topbar-inner { max-width:1240px; margin:auto; min-height:63px; display:flex; align-items:center; justify-content:space-between; gap:18px; padding:10px 28px; }
+    .brand { font-size:14px; letter-spacing:.04em; font-weight:750; white-space:nowrap; }
+    .brand span { color:var(--lance); }
+    nav { display:flex; gap:20px; align-items:center; flex-wrap:wrap; }
+    nav a { color:var(--muted); font-size:13px; text-decoration:none; font-weight:600; }
+    nav a:hover { color:var(--lr); }
+    main { max-width:1240px; margin:auto; padding:42px 28px 72px; }
+    .hero { display:grid; grid-template-columns:1.5fr 1fr; gap:38px; align-items:center; padding:18px 0 36px; }
+    .eyebrow { display:flex; align-items:center; flex-wrap:wrap; gap:9px; font-size:12px; font-weight:750; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--lance); }
+    h1 { font-size:clamp(32px,4.1vw,53px); letter-spacing:-.045em; line-height:1.1; margin:18px 0; font-weight:760; }
+    h1 span { color:var(--lance); }
+    .lead { font-size:17px; max-width:650px; color:var(--muted); margin:0 0 23px; }
+    .button-link,button.primary { display:inline-block; border:1px solid var(--ink); background:var(--ink); color:white; padding:10px 16px; border-radius:8px; text-decoration:none; font-size:13px; font-weight:650; }
+    .secondary { color:var(--ink); font-size:13px; margin-left:15px; }
+    .baseline { background:var(--white); padding:23px 24px; border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); }
+    .baseline h2 { font-size:14px; margin:0 0 14px; letter-spacing:0; }
+    .baseline dl { margin:0; display:grid; gap:10px; }
+    .baseline dl div { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid #edf1f5; padding-bottom:9px; font-size:12px; }
+    .baseline dt { color:var(--muted); }
+    .baseline dd { margin:0; font-weight:650; text-align:right; }
+    .baseline p { margin:13px 0 0; font-size:12px; color:var(--muted); }
+    code { font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace; font-size:.87em; }
+    p code,td code,li code { background:#e9edf2; padding:2px 4px; border-radius:3px; overflow-wrap:anywhere; }
+    .notice { display:flex; gap:13px; padding:17px 20px; background:var(--warm-bg); border:1px solid #e8d1b3; border-left:4px solid var(--warm); border-radius:9px; font-size:14px; }
+    .notice strong { color:#774412; }
+    .notice p { margin:0; }
+    section { margin-top:46px; }
+    .section-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:18px; }
+    .section-head h2 { margin:4px 0 0; font-size:27px; letter-spacing:-.025em; line-height:1.25; }
+    .section-head p { color:var(--muted); font-size:14px; margin:8px 0 0; max-width:760px; }
+    .section-num { font:700 11px ui-monospace,monospace; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; }
+    .small-link { font-size:12px; white-space:nowrap; }
+    .owners { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+    .owner { background:white; border:1px solid var(--line); border-top:4px solid var(--owner); border-radius:11px; padding:21px; }
+    .owner.lance { --owner:var(--lance); }
+    .owner.lr { --owner:var(--lr); }
+    .owner.ray { --owner:var(--ray); }
+    .owner h3 { font-size:19px; margin:9px 0 5px; }
+    .owner .role { color:var(--owner); font-weight:650; font-size:13px; margin:0 0 13px; }
+    .owner ul { list-style:none; padding:0; margin:0; font-size:13px; color:var(--muted); }
+    .owner li { padding:5px 0; border-top:1px solid #edf1f5; }
+    .badge { display:inline-flex; gap:6px; align-items:center; font-size:10px; letter-spacing:.05em; font-weight:750; text-transform:uppercase; border-radius:5px; padding:4px 7px; }
+    .badge.green { background:var(--lance-bg); color:var(--lance); }
+    .badge.blue { background:var(--lr-bg); color:var(--lr); }
+    .badge.purple { background:var(--ray-bg); color:var(--ray); }
+    .badge.amber { background:var(--warm-bg); color:var(--warm); }
+    .panel { background:white; border:1px solid var(--line); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); }
+    .modebar { padding:18px 22px; display:flex; align-items:center; gap:18px; justify-content:space-between; border-bottom:1px solid var(--line); }
+    .segmented { display:inline-flex; padding:4px; background:#edf1f5; border-radius:9px; gap:4px; }
+    .segmented button { background:transparent; color:var(--muted); border:0; border-radius:6px; padding:9px 13px; font-size:12px; font-weight:700; }
+    .segmented button[aria-pressed="true"] { background:white; color:var(--ink); box-shadow:0 1px 4px #172b4118; }
+    .mode-description { padding:17px 22px; background:#fafbfd; color:var(--muted); font-size:13px; border-bottom:1px solid var(--line); }
+    .mode-description strong { color:var(--ink); }
+    .explorer { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(275px,1fr); }
+    .diagram-area { padding:17px 14px 12px; min-width:0; }
+    .diagram-area svg { display:block; width:100%; height:auto; }
+    svg text { font-family:Inter,ui-sans-serif,system-ui,sans-serif; fill:var(--ink); }
+    svg .sv-label { font-size:13px; font-weight:700; }
+    svg .sv-small { font-size:10px; fill:var(--muted); }
+    svg .sv-title { font-size:11px; font-weight:700; }
+    svg .box { fill:#fff; stroke:#d6dfe8; stroke-width:1.5; }
+    svg .local { fill:#f1f9f5; stroke:#a9cfc1; }
+    svg .route { fill:#edf2ff; stroke:#b7c9ee; }
+    svg .origin { fill:#fff7ea; stroke:#dcc4a0; }
+    svg .runtime { fill:#f3f0f7; stroke:#d5ccdf; }
+    svg .flow { fill:none; stroke:#a3b3c4; stroke-width:1.7; marker-end:url(#arrow); }
+    svg .flow.dash { stroke-dasharray:5 4; }
+    svg .node.active .box { stroke:var(--lr); stroke-width:3; }
+    svg .node.active .local { stroke:var(--lance); }
+    svg .node.active .origin { stroke:var(--warm); }
+    svg .node.dim { opacity:.38; }
+    .legend { display:flex; gap:15px; flex-wrap:wrap; padding:0 10px 9px; font-size:11px; color:var(--muted); }
+    .legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; }
+    .scenario { border-left:1px solid var(--line); padding:20px; background:#fbfcfe; }
+    .scenario label { font-size:11px; text-transform:uppercase; letter-spacing:.08em; font-weight:750; }
+    select { display:block; width:100%; margin:8px 0 15px; border:1px solid #bdcad7; background:white; padding:9px 10px; border-radius:7px; font-size:13px; color:var(--ink); }
+    .steps { list-style:none; padding:0; margin:0; counter-reset:steps; }
+    .steps li { display:flex; gap:9px; margin:0 0 10px; font-size:12px; color:var(--muted); align-items:baseline; }
+    .steps li::before { counter-increment:steps; content:counter(steps); display:inline-grid; place-items:center; border:1px solid var(--line); min-width:21px; height:21px; border-radius:50%; font:700 10px ui-monospace,monospace; }
+    .steps li.current { color:var(--ink); font-weight:700; }
+    .steps li.current::before { color:white; background:var(--lr); border-color:var(--lr); }
+    .step-detail { font-size:13px; color:var(--muted); padding-top:12px; border-top:1px solid var(--line); min-height:111px; }
+    .step-actions { display:flex; justify-content:space-between; gap:8px; margin-top:14px; align-items:center; }
+    .step-actions button { padding:7px 11px; border-radius:6px; border:1px solid #becbd7; background:white; color:var(--ink); font-size:12px; }
+    .step-actions button:disabled { opacity:.45; cursor:default; }
+    .step-actions .next { background:var(--lr); color:white; border-color:var(--lr); }
+    .step-counter { font-size:11px; color:var(--muted); }
+    .footnote { padding:14px 22px; background:#fffbf5; border-top:1px solid #e9dfd0; font-size:12px; color:#775229; }
+    .split { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .pad { padding:22px; }
+    .pad h3 { margin:0 0 11px; font-size:18px; letter-spacing:-.015em; }
+    .pad p { font-size:13px; color:var(--muted); margin:9px 0; }
+    .path-row { display:flex; align-items:center; gap:9px; margin:18px 0 13px; flex-wrap:wrap; }
+    .path-node { background:var(--lance-bg); color:var(--lance); border:1px solid #bfdaca; border-radius:7px; padding:9px 12px; font-size:12px; font-weight:650; }
+    .path-node.ssd { background:#edf2ff; border-color:#c6d4ef; color:var(--lr); }
+    .path-node.source { background:var(--warm-bg); border-color:#e6ceaa; color:var(--warm); }
+    .arrow { color:#7d8da0; }
+    .plain-list { padding-left:18px; margin:12px 0 0; color:var(--muted); font-size:13px; }
+    .plain-list li { margin-bottom:7px; }
+    .table-wrap { overflow:auto; }
+    table { border-collapse:collapse; width:100%; text-align:left; font-size:13px; }
+    th { background:#f0f4f7; font-size:11px; text-transform:uppercase; letter-spacing:.035em; color:#526579; padding:12px 16px; }
+    td { padding:13px 16px; border-top:1px solid #e4eaf0; vertical-align:top; }
+    td p { margin:4px 0 0; font-size:12px; color:var(--muted); }
+    td:first-child { font-weight:650; }
+    .detail-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:13px; }
+    .detail-card { border:1px solid var(--line); background:white; border-radius:10px; padding:18px; }
+    .detail-card h3 { margin:7px 0; font-size:15px; }
+    .detail-card p { font-size:12px; color:var(--muted); margin:0; }
+    .callout { border-left:3px solid var(--lr); background:var(--lr-bg); padding:13px 16px; border-radius:4px; color:#334e7d; font-size:13px; margin-top:17px; }
+    .rollout { display:grid; grid-template-columns:repeat(5,1fr); margin:20px 0 5px; gap:9px; }
+    .rollout div { background:white; border:1px solid var(--line); border-radius:8px; padding:14px 12px; position:relative; }
+    .rollout div:not(:last-child)::after { content:"→"; position:absolute; right:-10px; top:35%; color:#6c7d91; z-index:1; }
+    .rollout span { color:var(--lance); font:700 11px ui-monospace,monospace; }
+    .rollout strong { display:block; margin:5px 0; font-size:13px; }
+    .rollout p { font-size:11px; color:var(--muted); margin:0; }
+    .code-label { padding:10px 16px; color:#c7d7e8; background:#21374d; font-size:11px; letter-spacing:.02em; }
+    pre { margin:0; background:#14283c; color:#e2edf6; padding:19px; overflow:auto; tab-size:4; font-size:12px; line-height:1.7; }
+    pre code { font-size:inherit; }
+    .code-note { padding:13px 16px; font-size:12px; color:var(--muted); }
+    details { background:white; border:1px solid var(--line); border-radius:9px; margin-top:14px; }
+    summary { cursor:pointer; padding:15px 18px; font-size:13px; font-weight:650; }
+    details > div { padding:0 18px 18px; font-size:13px; color:var(--muted); }
+    .controls { display:grid; gap:14px; margin:18px 0; }
+    .control { display:grid; grid-template-columns:1fr 100px; gap:12px; align-items:center; font-size:13px; color:var(--muted); }
+    .control input[type=number] { min-width:0; border:1px solid #bdcad7; border-radius:6px; padding:7px 9px; width:100%; color:var(--ink); background:white; }
+    input[type=range] { accent-color:var(--lance); width:100%; }
+    .numbers { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .number { padding:15px; background:#f0f6f4; border:1px solid #d4e6dd; border-radius:8px; }
+    .number.blue { background:var(--lr-bg); border-color:#d0dcf3; }
+    .number span { display:block; color:var(--muted); font-size:11px; }
+    .number strong { font-size:28px; color:var(--lance); letter-spacing:-.035em; }
+    .number.blue strong { color:var(--lr); }
+    .number small { display:block; font-size:11px; color:var(--muted); }
+    .capacity-error { font-size:12px; color:var(--red); min-height:19px; }
+    .ceiling { display:flex; align-items:center; justify-content:space-between; margin:22px 0 12px; gap:20px; }
+    .ceiling strong { font-size:39px; color:var(--warm); letter-spacing:-.04em; }
+    .ceiling span { font-size:12px; color:var(--muted); max-width:190px; }
+    .timebar { display:flex; height:27px; border-radius:5px; overflow:hidden; margin:15px 0; }
+    .timebar .cachepart { background:var(--lance); width:10%; }
+    .timebar .otherpart { background:#dae1e9; flex:1; }
+    .milestones { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+    .milestone { background:white; border:1px solid var(--line); border-radius:10px; padding:21px; }
+    .milestone h3 { font-size:16px; margin:10px 0 6px; }
+    .milestone p { font-size:13px; color:var(--muted); margin:0; }
+    .milestone .gate { border-top:1px solid var(--line); padding-top:13px; margin-top:14px; font-size:12px; }
+    .sources { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .sources ul { margin:0; padding-left:18px; font-size:12px; }
+    .sources li { margin-bottom:8px; }
+    footer { margin-top:35px; border-top:1px solid var(--line); padding-top:20px; display:flex; justify-content:space-between; gap:20px; font-size:12px; color:var(--muted); }
+    [hidden] { display:none !important; }
+    @media (max-width:1000px) { .hero { grid-template-columns:1.3fr 1fr; gap:20px; } .explorer { grid-template-columns:1fr; } .scenario { border-left:0; border-top:1px solid var(--line); } .step-detail { min-height:0; } .steps { display:grid; grid-template-columns:1fr 1fr; gap:0 15px; } nav { gap:12px; } }
+    @media (max-width:740px) { main { padding:25px 17px 45px; } .topbar-inner { padding:10px 17px; flex-wrap:wrap; gap:8px; } nav { gap:13px; } nav a { font-size:11px; } .hero { grid-template-columns:1fr; gap:20px; } h1 { font-size:36px; } .owners,.split,.detail-grid,.milestones,.sources { grid-template-columns:1fr; } .modebar { align-items:flex-start; flex-direction:column; gap:10px; } .section-head { align-items:flex-start; flex-direction:column; gap:8px; } .section-head h2 { font-size:24px; } .rollout { grid-template-columns:1fr; } .rollout div:not(:last-child)::after { content:"↓"; top:auto; bottom:-12px; left:50%; right:auto; } .steps { grid-template-columns:1fr; } .secondary { display:block; margin:13px 0 0; } .notice { font-size:13px; } footer { flex-direction:column; } .diagram-area { padding:8px 2px; } }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+    @media print { .topbar,.skip,.step-actions,.controls,.small-link,button { display:none !important; } body { background:white; font-size:11px; } main { padding:0; max-width:none; } .hero { padding:0; gap:20px; } h1 { font-size:30px; } section { margin-top:24px; } .panel,.owner,.detail-card,.milestone { box-shadow:none; break-inside:avoid; } .explorer { grid-template-columns:1.6fr 1fr; } .scenario { border-left:1px solid var(--line); border-top:0; } a { color:inherit; } pre { white-space:pre-wrap; } .owners,.detail-grid,.milestones { grid-template-columns:repeat(3,1fr); } .split { grid-template-columns:1fr 1fr; } .sources { grid-template-columns:1fr 1fr; } .baseline { box-shadow:none; } }
+  </style>
+</head>
+<body>
+<a href="#main" class="skip">Skip to design</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><span>LANCE</span> / CACHE DESIGN</div>
+    <nav aria-label="Review sections">
+      <a href="#ownership">Ownership</a><a href="#walkthrough">Walkthrough</a><a href="#semantics">Correctness</a><a href="#examples">Examples</a><a href="#delivery">Delivery</a>
+    </nav>
+  </div>
+</header>
+<main id="main">
+  <div class="hero">
+    <div>
+      <div class="eyebrow"><span class="dot"></span> Architecture proposal <span>·</span> 05 November 2026</div>
+      <h1>Tiered cache.<br><span>Distributed by Lance-Ray.</span></h1>
+      <p class="lead">Lance owns local index caching and search semantics. Lance-Ray owns placement, routing and recovery. The checked-out Ray runtime stays unchanged.</p>
+      <a class="button-link" href="06-tiered-cache-and-ray-design.md">Read the full Markdown design ↗</a>
+      <a class="secondary" href="#walkthrough">Explore a query step by step ↓</a>
+    </div>
+    <aside class="baseline" aria-label="Source baselines">
+      <h2>Grounded in the three local checkouts</h2>
+      <dl>
+        <div><dt>Source feature</dt><dd>private-12.0-cache<br><code>a57e30147</code></dd></div>
+        <div><dt>Target Lance</dt><dd>15.0.0-beta.10<br><code>65c3325b7</code></dd></div>
+        <div><dt>Lance-Ray</dt><dd>0.4.2 · <code>fd56f015</code></dd></div>
+        <div><dt>Ray</dt><dd>2.60.0 · <code>067653bb</code></dd></div>
+      </dl>
+      <p>Design artifacts only. New APIs and serving modes below are proposals. The illustrations are not benchmark measurements.</p>
+    </aside>
+  </div>
+
+  <div class="notice">
+    <span aria-hidden="true">↳</span>
+    <p><strong>The key finding:</strong> the v12 “distributed cache” is a per-process RAM/SSD backend. It contains no router, actor coordinator or distributed ANN reducer. Selected prewarming does not constrain which partitions a query searches.</p>
+  </div>
+
+  <section id="ownership">
+    <div class="section-head"><div><div class="section-num">01 / Project boundaries</div><h2>One clear owner for each responsibility</h2><p>The local mechanism belongs beside its native codecs. Every decision involving multiple workers belongs in Lance-Ray.</p></div></div>
+    <div class="owners">
+      <article class="owner lance"><span class="badge green">Native engine</span><h3>lance-open-source</h3><p class="role">Store, load and search correctly</p><ul><li>RAM/SSD backend and bounded eviction</li><li>Codecs, scopes, integrity and invalidation</li><li>Strict warmup and current IVF_RQ layouts</li><li>Native query planning and final reduction</li><li>Thin Python bindings; no Ray dependency</li></ul></article>
+      <article class="owner lr"><span class="badge blue">Distributed service</span><h3>lance-ray-open-source</h3><p class="role">Decide where and when work runs</p><ul><li>Long-lived actors and local Sessions</li><li>Assignments, replicas and readiness</li><li>Query routing, bounded dispatch and retries</li><li>Pinned snapshots, rollout and drain</li><li>Recovery and service-level observability</li></ul></article>
+      <article class="owner ray"><span class="badge purple">Unchanged runtime</span><h3>ray-open-source</h3><p class="role">Execute through existing public APIs</p><ul><li>Actor processes and task scheduling</li><li>RPC and immutable result transport</li><li>Public placement and resource controls</li><li>Existing process and node fault reporting</li><li>No connector, scheduler or GCS changes</li></ul></article>
+    </div>
+  </section>
+
+  <section id="walkthrough">
+    <div class="section-head"><div><div class="section-num">02 / Interactive walkthrough</div><h2>Follow the request, then change the failure</h2><p>Compare the first delivery with the sharded target. Select a scenario and advance through its steps.</p></div><span class="badge amber">Illustrative · no runtime calls</span></div>
+    <div class="panel">
+      <div class="modebar">
+        <div class="segmented" role="group" aria-label="Serving mode">
+          <button type="button" id="mode-replicated" aria-pressed="true">Replicated · first delivery</button>
+          <button type="button" id="mode-partitioned" aria-pressed="false">Partitioned · later gate</button>
+        </div>
+        <span id="mode-badge" class="badge green">One complete native query</span>
+      </div>
+      <div class="mode-description" id="mode-description"><strong>Replicated:</strong> route each request to one READY actor. Lance executes the entire query, including filters, deltas, refinement and result-column reads. Warmup is a locality hint.</div>
+      <div class="explorer">
+        <div class="diagram-area">
+          <svg viewBox="0 0 670 508" role="img" aria-labelledby="diagram-title diagram-desc">
+            <title id="diagram-title">Lance-Ray routing to actor-local Lance caches</title>
+            <desc id="diagram-desc">A pinned query enters the Lance-Ray router. Actors contain a native Lance session with RAM and local SSD. Cache misses reach canonical object storage. Ray supplies the unchanged execution runtime.</desc>
+            <defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#a3b3c4"/></marker></defs>
+            <g id="d-query" class="node active"><rect class="box" x="221" y="12" width="228" height="48" rx="9"/><text class="sv-label" x="335" y="33" text-anchor="middle">Query at snapshot V</text><text class="sv-small" x="335" y="48" text-anchor="middle">q · k · query options · request ID</text></g>
+            <path class="flow" d="M335 60 V83"/>
+            <g id="d-router" class="node"><rect class="box route" x="151" y="85" width="368" height="62" rx="10"/><text class="sv-label" x="335" y="109" text-anchor="middle">Lance-Ray router + controller</text><text id="routing-label" class="sv-small" x="335" y="129" text-anchor="middle">Choose one READY replica for the full query</text></g>
+            <path class="flow" d="M263 147 V163 H169 V185"/><path class="flow" id="route-b" d="M407 147 V163 H501 V185"/>
+            <g id="d-worker-a" class="node"><rect class="box" x="22" y="188" width="294" height="169" rx="11"/><text class="sv-label" x="40" y="212">Actor A</text><text class="sv-small" x="40" y="229" id="worker-a-label">Pinned native Dataset + Session</text><rect class="box local" x="39" y="242" width="260" height="42" rx="7"/><text class="sv-title" x="169" y="259" text-anchor="middle">Lance: search and row semantics</text><text class="sv-small" x="169" y="274" text-anchor="middle" id="worker-a-work">Complete query on snapshot V</text></g>
+            <g id="d-ram-a" class="node"><rect class="box local" x="39" y="300" width="113" height="39" rx="7"/><text class="sv-title" x="95" y="324" text-anchor="middle">Decoded RAM</text></g>
+            <path class="flow" d="M154 319 H176"/>
+            <g id="d-ssd-a" class="node"><rect class="box local" x="180" y="300" width="119" height="39" rx="7"/><text class="sv-title" x="239" y="324" text-anchor="middle">Local SSD</text></g>
+            <g id="d-worker-b" class="node dim"><rect class="box" x="354" y="188" width="294" height="169" rx="11"/><text class="sv-label" x="372" y="212">Actor B</text><text class="sv-small" x="372" y="229" id="worker-b-label">Independent Dataset + Session</text><rect class="box local" x="371" y="242" width="260" height="42" rx="7"/><text class="sv-title" x="501" y="259" text-anchor="middle">Lance: search and row semantics</text><text class="sv-small" x="501" y="274" text-anchor="middle" id="worker-b-work">Another complete-query replica</text></g>
+            <g id="d-ram-b" class="node dim"><rect class="box local" x="371" y="300" width="113" height="39" rx="7"/><text class="sv-title" x="427" y="324" text-anchor="middle">Decoded RAM</text></g>
+            <path class="flow" d="M486 319 H508"/>
+            <g id="d-ssd-b" class="node dim"><rect class="box local" x="512" y="300" width="119" height="39" rx="7"/><text class="sv-title" x="571" y="324" text-anchor="middle">Local SSD</text></g>
+            <path class="flow dash" d="M239 339 V381 H280 V401"/><path class="flow dash" d="M571 339 V381 H391 V401"/>
+            <text class="sv-small" x="24" y="382">Misses / metadata / raw rows</text>
+            <g id="d-origin" class="node"><rect class="box origin" x="151" y="403" width="368" height="48" rx="9"/><text class="sv-label" x="335" y="424" text-anchor="middle">Canonical Lance dataset</text><text class="sv-small" x="335" y="440" text-anchor="middle">_indices/ · data/ · versioned manifests</text></g>
+            <g id="d-runtime" class="node"><rect class="box runtime" x="22" y="468" width="626" height="29" rx="6"/><text class="sv-small" x="335" y="487" text-anchor="middle">Existing Ray runtime: actors · placement · RPC · ObjectRefs · fault reporting</text></g>
+          </svg>
+          <div class="legend"><span><i style="background:var(--lr)"></i>Lance-Ray coordination</span><span><i style="background:var(--lance)"></i>Native Lance</span><span><i style="background:var(--warm)"></i>Canonical source</span></div>
+        </div>
+        <div class="scenario">
+          <label for="scenario-select">Scenario</label>
+          <select id="scenario-select"><option value="cold">First query · cold cache</option><option value="ram">Repeated query · RAM hit</option><option value="ssd">RAM eviction · SSD hit</option><option value="restart">Actor restarts · same SSD</option><option value="node">Node lost · another replica</option><option value="refresh">Snapshot changes · warm then switch</option></select>
+          <ol class="steps" id="steps"><li class="current">Pin the query snapshot</li><li>Select READY workers</li><li>RAM and SSD miss</li><li>Load canonical index payloads</li><li>Search, refine and return</li></ol>
+          <div class="step-detail" id="step-detail" aria-live="polite">The request carries one resolved dataset snapshot. Workers do not independently open “latest”.</div>
+          <div class="step-actions"><button type="button" id="previous" disabled>← Back</button><span class="step-counter" id="step-counter">1 / 5</span><button type="button" id="next" class="next">Next step →</button></div>
+        </div>
+      </div>
+      <div class="footnote"><strong>The SSD tier caches index payloads.</strong> Native metadata/resident state may still need source reads. Exact refinement and requested result columns still read <code>data/</code>. A warm cache does not make the query independent of object storage.</div>
+    </div>
+    <noscript><p class="callout">JavaScript is disabled. The initial cold-query diagram is shown. All architecture, examples and review decisions below remain readable.</p></noscript>
+  </section>
+
+  <section id="local-cache">
+    <div class="section-head"><div><div class="section-num">03 / Adapting the native cache</div><h2>Port the contracts, preserve the newer engine</h2><p>The current Lance branch already has backend configuration, detailed diagnostics and richer IVF_RQ caching paths.</p></div></div>
+    <div class="split">
+      <article class="panel pad"><h3>Local persistence stays in Lance</h3><div class="path-row"><span class="path-node">Payload RAM</span><span class="arrow">→</span><span class="path-node ssd">Local SSD</span><span class="arrow">→</span><span class="path-node source">Source loader</span></div><ul class="plain-list"><li>Separate index-state RAM, optional payload RAM and dataset/file metadata budgets.</li><li>One live backend locks each directory. Publish through temporary files and atomic rename; validate integrity on reads.</li><li>Reserve disk capacity before writing. Count temporary files and failed deletions; evict locally with bounded LRU.</li><li>Ordinary queries can bypass failed SSD persistence. Strict prewarming reports the failure.</li><li>Fenced invalidation prevents a slow loader from restoring retired entries.</li></ul></article>
+      <article class="panel pad"><h3>Current IVF_RQ needs more than whole partitions</h3><ul class="plain-list"><li><code>PartitionEntry.*</code>: existing whole-partition codecs.</li><li><code>rq.partition-codes</code>: encoded payloads whose resident rows are reattached by Lance.</li><li><code>rabit.plane</code>: sign/extended plane entries with priority and row-gather behavior.</li><li>Keep no-promotion, tier-probe and partial-read contracts. Weigh decoded memory separately from serialized disk bytes.</li><li>Index metadata, live handles and legacy paths retain their existing memory/read behavior.</li></ul><p class="callout">Use <code>Session(index_cache_backend=...)</code> with a proposed <code>tiered</code> backend. Extend existing <code>cache_diagnostics()</code>; avoid a competing v12 configuration/statistics API.</p></article>
+    </div>
+    <div class="callout"><strong>Warmup has a precise promise:</strong> every selected payload is persisted together at a successful completion checkpoint. Eviction can happen later. An empty assignment means no work; “all partitions” must be explicit.</div>
+  </section>
+
+  <section id="semantics">
+    <div class="section-head"><div><div class="section-num">04 / Query correctness</div><h2>Sharding needs native semantic seams</h2><p>Lance-Ray dispatches work. Lance decides what that work means and how its results form one valid query result.</p></div></div>
+    <div class="panel table-wrap"><table><thead><tr><th>Proposed primitive</th><th>Lance owns</th><th>Lance-Ray owns</th></tr></thead><tbody>
+      <tr><td><code>plan_vector_query</code></td><td>Snapshot validation, per-segment models, ordered probes, candidate budgets</td><td>Group work by assignment and ready replicas</td></tr>
+      <tr><td><code>search_vector_partitions</code></td><td>Search exact segment/partition scope; emit candidates and explicit work completion</td><td>Dispatch, concurrency limits, deadlines and retry attempts</td></tr>
+      <tr><td><code>finish_vector_query</code></td><td>Completeness, native ranking, deduplication, refinement and projection</td><td>Collect bounded results and call the reducer on a selected actor</td></tr>
+    </tbody></table></div>
+    <div class="detail-grid" style="margin-top:16px">
+      <article class="detail-card"><span class="badge blue">Identity</span><h3>A partition belongs to a segment</h3><p>Route by physical segment UUID + partition ID. S0/4 and S1/4 can have different centroids. Keep dataset snapshot, routing epoch and cache generation separate.</p></article>
+      <article class="detail-card"><span class="badge blue">Completeness</span><h3>An empty result is still work</h3><p>Every selected work item must acknowledge completion. Accept one attempt per item, reject wrong snapshots, and retry or fail when coverage is missing.</p></article>
+      <article class="detail-card"><span class="badge blue">Candidate budget</span><h3>Global refinement happens once</h3><p>For k=10 and refine factor=4, up to 40 candidates per selected partition may be needed. Four partitions can transfer 160, before native global reduction and refinement.</p></article>
+    </div>
+    <div class="panel table-wrap" style="margin-top:18px"><table><thead><tr><th>Query shape</th><th>Replicated mode</th><th>Initial partitioned mode</th></tr></thead><tbody>
+      <tr><td>Fixed probes, supported flat IVF, complete coverage</td><td>Complete native query</td><td>Shard after native parity gate; exact refinement after finalizer validation</td></tr>
+      <tr><td>Adaptive probes, HNSW, filters, multivectors, advanced batches</td><td>Complete native query</td><td>Observable full-native fallback, or configured unsupported error</td></tr>
+      <tr><td>Unindexed fragments or newer overlays</td><td>Native delta/overlay reconciliation</td><td>Full-native fallback preserving the same snapshot</td></tr>
+      <tr><td>A shard response is missing</td><td>Retry the complete read within deadline</td><td>Retry, discard partial work and run a complete native query, or fail</td></tr>
+    </tbody></table></div>
+    <p class="callout">Do not concatenate fragment-local ANN outputs, treat <code>index_segments</code> as partition selection, silently enable <code>fast_search</code>, or drop unsupported query options. Existing Ray Data Lance reads are not a global ANN reducer.</p>
+  </section>
+
+  <section id="lifecycle">
+    <div class="section-head"><div><div class="section-num">05 / Lifecycle and recovery</div><h2>Warm, publish, drain</h2><p>Serve one pinned snapshot per query. New assignments become visible only after their workers prove readiness.</p></div></div>
+    <div class="rollout">
+      <div><span>01</span><strong>Resolve V+1</strong><p>Read the committed snapshot and physical segment identities.</p></div>
+      <div><span>02</span><strong>Prepare workers</strong><p>Open Sessions and reuse compatible immutable payloads.</p></div>
+      <div><span>03</span><strong>Warm and verify</strong><p>Strict persistence checkpoint, expected snapshot and capability handshake.</p></div>
+      <div><span>04</span><strong>Publish epoch</strong><p>New requests use V+1. In-flight V requests keep V.</p></div>
+      <div><span>05</span><strong>Drain and release</strong><p>Reclaim retired cache entries after their last served snapshot drains.</p></div>
+    </div>
+    <div class="detail-grid" style="margin-top:18px">
+      <article class="detail-card"><span class="badge green">Process restart</span><h3>Reuse the same local SSD</h3><p>Keep worker paths outside Ray temporary directories. Reacquire the exclusive lock, rebuild state and recheck readiness. RAM is cold.</p></article>
+      <article class="detail-card"><span class="badge amber">Node loss</span><h3>Use a replica or reload</h3><p>A different node does not inherit the lost node's SSD. Serve another ready copy or rebuild from canonical storage. Verify replicas occupy different nodes.</p></article>
+      <article class="detail-card"><span class="badge amber">Disk or controller failure</span><h3>Keep the contract visible</h3><p>Failed strict warmup cannot mark an assignment READY. Recover controller state from a durable descriptor; reconcile fencing tokens before routing resumes.</p></article>
+    </div>
+    <details><summary>What unchanged Ray provides, and what the service must add</summary><div><p>Use public actors, ObjectRefs, resource controls and scheduling strategies. The proposed default uses controller-managed worker replacement with automatic actor/task retries disabled, so there is one recovery policy. Soft node affinity can still wait for resources on a live node; Lance-Ray enforces startup deadlines.</p><p>Ray can restart a process but does not restore its application state. A named or detached actor is not a durable deployment record. Lance-Ray persists snapshot/assignment state, manages request deadlines, and makes warmup and retry handling idempotent.</p><p>Sources: <a href="https://docs.ray.io/en/latest/ray-core/scheduling/index.html">Ray scheduling</a> and <a href="https://docs.ray.io/en/latest/ray-core/fault_tolerance/actors.html">actor fault tolerance</a>; the local pinned source remains the implementation authority.</p></div></details>
+  </section>
+
+  <section id="examples">
+    <div class="section-head"><div><div class="section-num">06 / Proposed usage</div><h2>Local mechanisms, distributed configuration</h2><p>These sketches show the intended interface. The <code>tiered</code> backend and serving API are not implemented in the current checkouts.</p></div><span class="badge amber">API sketches</span></div>
+    <div class="split">
+      <article class="panel"><div class="code-label">Lance · no Ray required · proposed backend</div><pre><code>from pathlib import Path
+import lance
+from lance.dataset import Session
+
+root = Path("/mnt/nvme/lance-cache/local")
+root.mkdir(parents=True, exist_ok=True)
+session = Session(
+    index_cache_backend={
+        "kind": "tiered",
+        "options": {
+            "path": str(root),
+            "index_metadata_l1_capacity_bytes":
+                str(64 * 1024**2),
+            "l1_partition_capacity_bytes":
+                str(512 * 1024**2),
+            "l2_capacity_bytes": str(8 * 1024**3),
+        },
+    },
+    metadata_cache_size_bytes=64 * 1024**2,
+)
+ds = lance.dataset(
+    "s3://example/vectors.lance",
+    version=42, session=session,
+)
+# Existing diagnostic API, extended tier details:
+stats = session.cache_diagnostics()</code></pre><div class="code-note">The native backend owns files, capacity, codecs and integrity. Session metadata has a separate budget. Existing memory-only Sessions keep their defaults.</div></article>
+      <article class="panel"><div class="code-label">Lance-Ray · proposed service facade</div><pre><code>import ray
+from lance_ray.serving import (
+    CacheConfig, VectorSearchService,
+)
+
+ray.init(address="auto")
+service = VectorSearchService.start(
+    name="catalog-vectors",
+    control_uri=
+        "s3://example/service-state/catalog/",
+    uri="s3://example/vectors.lance",
+    version=42,
+    index_name="embedding_idx",
+    mode="replicated", workers=3,
+    warmup="all",
+    cache=CacheConfig(
+        root="/mnt/nvme/lance-cache/catalog",
+        index_metadata_l1_capacity_bytes=
+            64 * 1024**2,
+        l1_partition_capacity_bytes=
+            512 * 1024**2,
+        metadata_cache_size_bytes=64 * 1024**2,
+        l2_capacity_bytes=8 * 1024**3,
+    ),
+)
+service.wait_ready(timeout_s=120)
+result = service.search(
+    query_vector, k=10, nprobes=8,
+    refine_factor=4, columns=["title"],
+)
+service.refresh(version=43)
+service.close()</code></pre><div class="code-note">The caller supplies <code>query_vector</code> and durable deployment storage/configuration. Lance-Ray constructs independent Sessions and worker roots; no Ray connector changes are involved.</div></article>
+    </div>
+    <details><summary>Strict selected warmup: proposed shape and empty-selection rule</summary><div><p>Replicated <code>warmup="all"</code> requires the full selected payload set to fit on each worker's SSD. Explicit <code>warmup="none"</code> permits demand loading and claims no warm payloads at READY. Partitioned mode warms each worker's assignment. Do not silently shrink a requested set.</p><pre><code>ds.prewarm_index_partitions(
+    "embedding_idx",
+    selections=[
+        {"segment_id": segment_uuid, "partition_ids": [1, 4]},
+    ],
+)
+# [] means no work; "all" explicitly selects every partition.
+# This does not restrict subsequent ordinary queries to [1, 4].</code></pre><p>Validate all selected IDs before payload work. Persist RAM hits as well as source loads. The selected set must fit simultaneously at completion; failure can leave a partial cache. Permanent assignment residency would require a separate lease design.</p></div></details>
+  </section>
+
+  <section id="capacity">
+    <div class="section-head"><div><div class="section-num">07 / Cost model</div><h2>Estimate the tradeoff before benchmarking</h2><p>These calculators illustrate capacity and a serial latency bound. They do not predict measured throughput or account for skew.</p></div></div>
+    <div class="split">
+      <article class="panel pad"><h3>How many SSD copies?</h3><p>Assume the complete eligible payload set is warmed. Replicated mode stores one full copy per worker. Balanced sharding stores one copy per partition replica.</p>
+        <div class="controls"><label class="control" for="payload-gib">Encoded payload set (GiB)<input id="payload-gib" type="number" min="1" max="100000" step="1" value="24"></label><label class="control" for="workers">Worker count<input id="workers" type="number" min="1" max="1000" step="1" value="4"></label><label class="control" for="replicas">Copies per partition<input id="replicas" type="number" min="1" max="1000" step="1" value="2"></label></div>
+        <div id="capacity-error" class="capacity-error" role="status"></div>
+        <div class="numbers" aria-live="polite"><div class="number"><span>FULL REPLICAS · TOTAL</span><strong id="full-total">96 GiB</strong><small id="full-worker">24 GiB per worker</small></div><div class="number blue"><span>PARTITIONED · TOTAL</span><strong id="shard-total">48 GiB</strong><small id="shard-worker">12 GiB per worker on average</small></div></div>
+        <p>Actual provisioned space needs headroom for temporary writes, rollout overlap, skew, filesystem allocation and other processes. Warm checkpoints do not reserve these copies forever.</p><p><strong>This model covers SSD payloads only.</strong> Native IVF_RQ resident row/factor stores can span a whole segment and be duplicated across actors even when its partitions are sharded. Budget them separately without double-counting bytes already charged to RAM caches.</p>
+      </article>
+      <article class="panel pad"><h3>What fraction can this cache accelerate?</h3><p>If index-payload loading accounts for a fraction <code>f</code> of serial latency, removing that entire cost gives an ideal ceiling of <code>1 / (1 - f)</code>.</p>
+        <div class="controls"><label for="load-fraction" style="font-size:13px">Partition-loading share: <strong id="fraction-label">10%</strong></label><input id="load-fraction" type="range" min="1" max="90" step="1" value="10"></div>
+        <div class="timebar" aria-hidden="true"><div class="cachepart" id="cache-fraction"></div><div class="otherpart"></div></div>
+        <div class="legend"><span><i style="background:var(--lance)"></i>Partition load</span><span><i style="background:#dae1e9"></i>All other work</span></div>
+        <div class="ceiling" aria-live="polite"><strong id="speedup">1.11×</strong><span>Ideal serial speedup if partition loading became free</span></div>
+        <p>SSD still costs I/O and decoding. Raw-vector refinement, payload reads and computation remain. Distributed fan-out adds RPC and reduction. Test the whole production query, including recall.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="delivery">
+    <div class="section-head"><div><div class="section-num">08 / Delivery and review</div><h2>Three gates, with a useful service at each stage</h2><p>Local cache parity and distributed query parity are separate proof obligations.</p></div></div>
+    <div class="milestones">
+      <article class="milestone"><span class="badge green">Gate 1 · Lance</span><h3>Current native cache</h3><p>Port local persistence, bounded SSD, exact invalidation and strict warmup. Integrate current codecs, resident weights and diagnostics.</p><p class="gate"><strong>Evidence:</strong> hit/miss/restart, integrity, capacity, races and current IVF_RQ layout tests. Lance works without Ray.</p></article>
+      <article class="milestone"><span class="badge blue">Gate 2 · Lance-Ray</span><h3>Replicated serving</h3><p>Actor-local Sessions, pinned snapshots, readiness, placement, recovery and refresh. Every request is one complete native query.</p><p class="gate"><strong>Evidence:</strong> exact-wheel compatibility, multi-fragment query parity, same-node and node-loss recovery, full-query benchmarks.</p></article>
+      <article class="milestone"><span class="badge blue">Gate 3 · Both projects</span><h3>Partitioned serving</h3><p>Native plan/search/finish primitives plus Lance-Ray dispatch, completeness checks, attempt deduplication and explicit fallback.</p><p class="gate"><strong>Evidence:</strong> multi-segment candidate/refinement parity, duplicate and missing replies, failure during rollout, recall and RPC costs.</p></article>
+    </div>
+    <div class="panel table-wrap" style="margin-top:18px"><table><thead><tr><th>Review decision</th><th>Recommended choice</th><th>Tradeoff to assess</th></tr></thead><tbody>
+      <tr><td>Backend location</td><td>Generic local backend in Lance; distribution in Lance-Ray</td><td>Native API work, with no Python callback on each cache lookup</td></tr>
+      <tr><td>First delivery</td><td>Replicated mode; sharding is an explicit later gate</td><td>More duplicate cached bytes, fewer new query semantics</td></tr>
+      <tr><td>SSD capacity</td><td>Required positive byte budget and local LRU</td><td>New accounting work beyond the v12 implementation</td></tr>
+      <tr><td>Warmup guarantee</td><td>Simultaneous persistence checkpoint</td><td>Future eviction remains possible; long-lived pins deferred</td></tr>
+      <tr><td>Unsupported sharded shapes</td><td>Observable complete-native fallback, with optional error mode</td><td>Possible latency change, preserved query semantics</td></tr>
+      <tr><td>Ray integration</td><td>Use the specified local runtime through public APIs</td><td>Lance-Ray must verify the target environment; existing lockfiles are not evidence</td></tr>
+    </tbody></table></div>
+    <div class="notice" style="margin-top:18px"><p><strong>Compatibility work belongs outside Ray.</strong> Lance-Ray's existing lock pins an older Ray/pylance pair; Ray's built-in Lance write connector also uses an older keyword contract. Build and verify an environment with the requested local Ray runtime and target Lance wheel, using Lance-Ray's native adapter paths. Do not change Ray's source or lockfiles.</p></div>
+  </section>
+
+  <section id="references">
+    <div class="section-head"><div><div class="section-num">09 / Evidence</div><h2>Inspect the reasoning at its source</h2><p>The Markdown design contains ASCII schemas, the complete ownership map, API contracts, failure cases, source revisions and implementation acceptance criteria.</p></div></div>
+    <div class="panel pad sources">
+      <ul><li><a href="06-tiered-cache-and-ray-design.md">Full design and source-branch inspection commands</a></li><li><a href="03-index-on-disk-and-search.md">Lance: current index storage and query paths</a></li><li><a href="../../rust/lance-core/src/cache/backend.rs">Lance: current cache backend interface</a></li><li><a href="../../rust/lance/src/index/vector/ivf/v2/rabit_scan.rs">Lance: native RaBitQ strategy boundary</a></li></ul>
+      <ul><li><a href="../../../lance-ray-open-source/plans/docs/00-overview.md">Lance-Ray: existing project responsibilities</a></li><li><a href="../../../lance-ray-open-source/plans/docs/04-versions-and-compatibility.md">Lance-Ray: dependency and compatibility notes</a></li><li><a href="../../../ray-open-source/plans/docs/01-architecture.md">Ray: runtime architecture</a></li><li><a href="../../../ray-open-source/plans/docs/05-ray-lance-integration.md">Ray: Lance integration and connector limits</a></li></ul>
+    </div>
+  </section>
+  <footer><span>Offline review artifact · no external scripts, fonts, storage writes or runtime calls</span><span>Design proposal · 2026-11-05 · <a href="06-tiered-cache-and-ray-design.md">Markdown companion</a></span></footer>
+</main>
+<script>
+  (() => {
+    "use strict";
+    const byId = id => document.getElementById(id);
+    let mode = "replicated";
+    let scenario = "cold";
+    let stepIndex = 0;
+    const step = (title, detail, nodes) => ({title, detail, nodes});
+    function scenarioSteps() {
+      const partitioned = mode === "partitioned";
+      const route = step(
+        partitioned ? "Plan and dispatch exact partition work" : "Select one READY replica",
+        partitioned ? "Lance prepares a supported fixed-probe plan. Lance-Ray assigns S0/1 and S1/2 to A, S0/4 and S1/6 to B. Each segment has its own model." : "Lance-Ray chooses an available actor. It runs one complete native query at the pinned snapshot; prewarming does not limit query coverage.",
+        partitioned ? ["router","worker-a","worker-b"] : ["router","worker-a"]
+      );
+      const finish = step(
+        partitioned ? "Validate coverage; finish natively" : "Finish the complete native query",
+        partitioned ? "Accept one attempt per work item, including empty results. Lance validates complete coverage, selects global candidates, then refines and fetches result columns. Missing work must retry or fail." : "Lance keeps its normal candidate, delta, filter and refinement semantics. Exact vectors and requested result columns still come from data/ files.",
+        ["worker-a","origin"]
+      );
+      const pin = step("Pin the query snapshot", "The request carries one resolved dataset snapshot. Workers do not independently open latest. Snapshot identity is distinct from routing epoch and local cache generation.", ["query"]);
+      const ramNodes = partitioned ? ["ram-a","ram-b"] : ["ram-a"];
+      const ssdNodes = partitioned ? ["ssd-a","ssd-b"] : ["ssd-a"];
+      const cases = {
+        cold: [pin, route, step("RAM and SSD miss", "The native backend coalesces simultaneous loads per key. Persistent entries are scoped by dataset, physical segment and optional fragment-reuse identity.", ramNodes.concat(ssdNodes)), step("Load canonical index payloads", "Lance reads the canonical index, reserves SSD capacity and publishes valid bytes atomically. A query can still use the loaded value if best-effort persistence fails.", ["origin"].concat(ssdNodes)), finish],
+        ram: [pin, route, step("Reuse decoded RAM entries", "The selected index payload is already decoded. There is no SSD read or source payload load for this hit. Other query stages may still perform I/O.", ramNodes), finish],
+        ssd: [pin, route, step("RAM misses; local bytes remain", "Payload eviction from RAM does not remove the SSD copy. Tier probes are advisory and do not count as reads or change hit statistics.", ramNodes), step("Read and decode from SSD", "Validate local integrity and the codec revision. Decode or gather through the native codec; promote only when the access mode and RAM budget permit it.", ssdNodes), finish],
+        restart: [step("Actor A exits; RAM is lost", "Lance-Ray removes this incarnation from readiness. Its stable worker directory is outside Ray's temporary session path; another process cannot open it until the exclusive lock is released.", ["worker-a","runtime"]), step("Reopen the same node-local root", "The replacement acquires the lock, rebuilds inventory and drops incomplete files. It reconstructs the pinned Dataset, metadata and mandatory resident columns.", ["ssd-a","origin"]), step("Re-establish READY", "The incarnation reports expected snapshot, capabilities and strict warm coverage. Success is a persistence checkpoint, not a promise that no source reads will occur later.", ["router","worker-a"]), route, step("Use retained SSD payloads", "Decoded RAM is cold. Valid persisted payloads can avoid canonical index-payload reads; corrupt or incompatible entries reload from source.", ["ssd-a"]), finish],
+        node: [step("Node A becomes unavailable", "The cache on its local SSD is unavailable too. Ray reports the failure; Lance-Ray owns request deadlines and placement of replacements.", ["runtime","worker-a"]), step("Select a surviving ready copy", partitioned ? "This scenario assumes two copies of each needed partition on different nodes. The controller retries A's work on a ready replica and accepts one attempt per work item." : "Route a complete query to B at the same pinned snapshot. Actual node placement must have been checked; SPREAD alone does not guarantee distinct failure domains.", ["router","worker-b"]), step("No copy? Rebuild from source", "A new node starts cold. It opens the snapshot and warms assigned entries from canonical storage before reporting READY. Do not assume the old node's SSD followed the actor.", ["ssd-b","origin"]), step("Return one complete result", "Retries and fallback must retain the request's snapshot. Partial candidate sets cannot be returned as if all partitions had completed.", ["worker-b","router"])],
+        refresh: [step("Discover committed snapshot V+1", "Active snapshot V has segments A and B; V+1 has A and C. Resolve one manifest identity, and preserve V for requests already in flight.", ["router","origin"]), step("Prepare and warm the new assignment", "Reuse compatible A payloads, load new C entries, and revalidate changed snapshot metadata. New deletes or overlays can change semantics even when index UUIDs are reused.", ["worker-b","ssd-b","origin"]), step("Publish a new routing epoch", "Publish only after expected capabilities and required warm coverage are ready. New requests pin V+1; existing requests keep V.", ["router"]), step("Drain old snapshot requests", "Wait for requests using V to finish or reach their deadlines. Stale completions cannot alter the new routing epoch.", ["worker-a","worker-b"]), step("Reclaim retired local entries", "Release B only when no served snapshot references it. Native invalidation fences late publishers. Canonical-file cleanup remains an application retention decision.", ["ssd-a","router"])]
+      };
+      return cases[scenario];
+    }
+    function renderWalkthrough() {
+      const partitioned = mode === "partitioned";
+      byId("mode-replicated").setAttribute("aria-pressed", String(!partitioned));
+      byId("mode-partitioned").setAttribute("aria-pressed", String(partitioned));
+      byId("mode-badge").textContent = partitioned ? "New native primitives required" : "One complete native query";
+      byId("mode-badge").className = "badge " + (partitioned ? "amber" : "green");
+      byId("mode-description").textContent = partitioned ? "Partitioned target: native planning → exact partition dispatch → coverage check → native global finalizer. Start with supported fixed-probe shapes; unsupported queries use an observable complete-native fallback or explicit error." : "Replicated first delivery: route each request to one READY actor. Lance executes the entire query, including filters, deltas, refinement and result-column reads. Warmup is a locality hint.";
+      byId("routing-label").textContent = partitioned ? "Native plan → partition assignment → dispatch" : "Choose one READY replica for the full query";
+      byId("worker-a-work").textContent = partitioned ? "Search S0/1 and S1/2" : "Complete query on snapshot V";
+      byId("worker-b-work").textContent = partitioned ? "Search S0/4 and S1/6" : "Another complete-query replica";
+      const steps = scenarioSteps();
+      const current = steps[stepIndex];
+      const list = byId("steps");
+      list.replaceChildren();
+      steps.forEach((entry, index) => {
+        const item = document.createElement("li");
+        item.textContent = entry.title;
+        if (index === stepIndex) { item.className = "current"; item.setAttribute("aria-current", "step"); }
+        list.appendChild(item);
+      });
+      byId("step-detail").textContent = current.detail;
+      byId("step-counter").textContent = `${stepIndex + 1} / ${steps.length}`;
+      byId("previous").disabled = stepIndex === 0;
+      byId("next").textContent = stepIndex === steps.length - 1 ? "Start again ↻" : "Next step →";
+      const showB = partitioned || scenario === "node" || scenario === "refresh";
+      document.querySelectorAll("svg .node").forEach(node => {
+        const key = node.id.slice(2);
+        node.classList.toggle("active", current.nodes.includes(key));
+        node.classList.toggle("dim", !showB && ["worker-b","ram-b","ssd-b"].includes(key));
+      });
+      byId("route-b").style.opacity = showB ? "1" : ".3";
+    }
+    ["replicated", "partitioned"].forEach(nextMode => byId("mode-" + nextMode).addEventListener("click", () => { mode = nextMode; stepIndex = 0; renderWalkthrough(); }));
+    byId("scenario-select").addEventListener("change", event => { scenario = event.target.value; stepIndex = 0; renderWalkthrough(); });
+    byId("previous").addEventListener("click", () => { if (stepIndex > 0) stepIndex--; renderWalkthrough(); });
+    byId("next").addEventListener("click", () => { stepIndex = (stepIndex + 1) % scenarioSteps().length; renderWalkthrough(); });
+    function renderCapacity() {
+      const inputs = ["payload-gib", "workers", "replicas"].map(byId);
+      const [payload, workers, replicas] = inputs.map(input => Number(input.value));
+      let error = "";
+      if (inputs.some(input => !input.value || !input.checkValidity()) || ![payload, workers, replicas].every(Number.isInteger)) error = "Enter positive whole numbers within the displayed field limits.";
+      else if (replicas > workers) error = "Copies per partition cannot exceed the number of workers.";
+      byId("capacity-error").textContent = error;
+      if (error) {
+        ["full-total", "shard-total", "full-worker", "shard-worker"].forEach(id => { byId(id).textContent = "—"; });
+        return;
+      }
+      const format = value => new Intl.NumberFormat("en", {maximumFractionDigits:1}).format(value);
+      byId("full-total").textContent = `${format(payload * workers)} GiB`;
+      byId("shard-total").textContent = `${format(payload * replicas)} GiB`;
+      byId("full-worker").textContent = `${format(payload)} GiB per worker`;
+      byId("shard-worker").textContent = `${format(payload * replicas / workers)} GiB per worker on average`;
+    }
+    ["payload-gib", "workers", "replicas"].forEach(id => byId(id).addEventListener("input", renderCapacity));
+    function renderSpeedup() {
+      const fraction = Number(byId("load-fraction").value);
+      byId("fraction-label").textContent = `${fraction}%`;
+      byId("speedup").textContent = `${(1 / (1 - fraction / 100)).toFixed(2)}×`;
+      byId("cache-fraction").style.width = `${fraction}%`;
+    }
+    byId("load-fraction").addEventListener("input", renderSpeedup);
+    renderWalkthrough();
+    renderCapacity();
+    renderSpeedup();
+  })();
+</script>
+</body>
+</html>
