@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="An evidence-based onboarding guide to Lance distributed execution, PostgreSQL integration, Ray, optional Ascend acceleration, and sustainable extension contracts.">
+<title>Distributed Lance — architecture &amp; contributor field guide</title>
+<style>
+:root{--paper:#f5f4ef;--surface:#fff;--ink:#162c36;--muted:#51656c;--line:#d9e1dd;--teal:#006e62;--mint:#e2f2eb;--orange:#b04c17;--sand:#fff0da;--blue:#254f8a;--pale:#eaf0f8;--rail:238px;--radius:12px}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:35px}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--teal);text-underline-offset:3px}button,input,select{font:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #bb5a13;outline-offset:4px}button{border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);padding:9px 15px}button:hover{border-color:var(--teal)}button[aria-pressed="true"],button[aria-selected="true"]{background:var(--teal);color:#fff;border-color:var(--teal)}button:disabled{opacity:.4;cursor:default}code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{font-size:.88em;overflow-wrap:anywhere}pre{background:#122b36;color:#e6f4ed;border-radius:9px;padding:22px;overflow:auto;font-size:13px;line-height:1.7;tab-size:2}pre code{font-size:inherit;overflow-wrap:normal}h1,h2,h3{line-height:1.16;letter-spacing:-.035em}h1{font-size:clamp(42px,5.6vw,77px);margin:18px 0 22px;max-width:760px;font-weight:740}h2{font-size:clamp(29px,3.1vw,42px);margin:10px 0 18px}h3{font-size:21px;margin:20px 0 12px}p{margin:0 0 17px}strong{font-weight:680}small,.small{font-size:13px;line-height:1.55}.muted{color:var(--muted)}.eyebrow{font-size:11px;font-weight:750;letter-spacing:.16em;text-transform:uppercase;color:var(--teal)}.lead{font-size:20px;line-height:1.6;max-width:780px;color:#405b63}.skip{position:fixed;top:-100px;left:15px;z-index:10;background:#fff;padding:12px}.skip:focus{top:15px}.progress{height:4px;position:fixed;top:0;left:0;right:0;z-index:20;background:#dce8e0}.progress span{display:block;height:100%;width:0;background:var(--teal)}aside{width:var(--rail);height:100vh;position:fixed;left:0;top:0;padding:36px 22px;background:#eef1e9;border-right:1px solid var(--line);overflow:auto}.brand{font-size:22px;letter-spacing:-.04em;font-weight:800;color:var(--ink);text-decoration:none}.brand i{font-style:normal;color:var(--teal)}.rail-caption{font-size:12px;color:var(--muted);margin:6px 0 30px}nav a{display:block;text-decoration:none;color:var(--muted);font-size:13px;padding:9px 7px;border-radius:5px;margin:2px 0}nav a span{display:inline-block;width:27px;font:11px ui-monospace,monospace;color:#687f7a}nav a:hover,nav a.active{background:#dfe9df;color:var(--ink)}.rail-footer{font-size:11px;margin-top:28px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted)}main{margin-left:var(--rail);max-width:1500px;padding:64px clamp(24px,5vw,78px) 30px}.hero{padding:22px 0 50px;border-bottom:1px solid var(--line)}.hero-grid{display:grid;grid-template-columns:1.25fr .75fr;gap:26px;align-items:center}.hero-figure{margin:0}.hero-figure svg{width:100%;height:auto}.hero-figure figcaption{font-size:12px;color:var(--muted);margin:10px 0}.pills{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}.pill,.badge{display:inline-block;border-radius:4px;padding:4px 9px;font-size:11px;letter-spacing:.02em;font-weight:700}.pill{background:#e5eae3;color:#405b52}.badge.ready{background:var(--mint);color:#005c4d}.badge.proposal{background:var(--sand);color:#91400e}.badge.limit{background:var(--pale);color:#254f8a}.actions{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0}.action{background:var(--teal);color:#fff;text-decoration:none;padding:11px 18px;border-radius:7px;font-size:14px}.action.secondary{color:var(--teal);background:#e2ebe3}.baseline{margin-top:24px;font-size:12px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted)}section{padding:55px 0;border-bottom:1px solid var(--line)}.section-number{font:11px ui-monospace,monospace;color:var(--teal);margin-right:9px}.section-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.doc-link{font-size:12px;white-space:nowrap}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:26px}.three-col{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.panel{padding:24px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}.panel.tint{background:var(--mint);border-color:#bed9cd}.note{border-left:3px solid var(--orange);padding:14px 18px;background:var(--sand);margin:22px 0;font-size:14px}.note.teal{border-color:var(--teal);background:var(--mint)}.note p:last-child,.panel p:last-child{margin-bottom:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:9px;background:#fff}table{border-collapse:collapse;width:100%;font-size:13px;min-width:580px}th{text-align:left;background:#edf1ec;font-size:11px;text-transform:uppercase;letter-spacing:.055em;color:#405c5a}td,th{padding:14px 17px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td:first-child{font-weight:650}td .badge{white-space:nowrap}.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:18px 0}.controls .small{margin-left:auto}.diagram{margin:26px 0;padding:24px;background:#fff;border:1px solid var(--line);border-radius:12px}.diagram svg{display:block;width:100%;height:auto;max-height:560px}.diagram figcaption{color:var(--muted);font-size:12px;margin:14px 0 0}.diagram-title{font-size:13px;font-weight:700;margin-bottom:16px}.svg-label{font:600 16px system-ui,sans-serif;fill:var(--ink)}.svg-small{font:13px system-ui,sans-serif;fill:var(--muted)}.svg-mini{font:11px ui-monospace,monospace;fill:var(--muted)}.svg-line{fill:none;stroke:#76968b;stroke-width:2;marker-end:url(#arr)}.svg-box{fill:#f2f6f1;stroke:#b4cbbd;stroke-width:1.4}.svg-proposed{fill:#fff7e8;stroke:#b77547;stroke-width:1.5;stroke-dasharray:5 4}.svg-core{fill:#dcefe4;stroke:var(--teal);stroke-width:2}.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:14px}.legend i{display:inline-block;width:18px;height:10px;background:#dcefe4;border:1px solid #527e68;margin-right:6px}.legend i.draft{background:#fff7e8;border:1px dashed #b77547}.owner-panel{min-height:120px;border-left:4px solid var(--teal);padding:14px 20px;background:#e7efe6;border-radius:0 8px 8px 0}.owner-panel h3{margin:0 0 8px}.owner-node{transition:opacity .15s}.owner-node.dim{opacity:.35}.owner-node.selected rect{stroke-width:3}.step-track{display:flex;gap:8px;margin:20px 0}.step-track button{flex:1;padding:10px 4px;font-size:11px;border-radius:7px}.step-track button b{display:block;font-size:19px;margin-bottom:4px}.step-copy{min-height:130px}.step-copy h3{margin-top:0}.seq-line{opacity:.18;transition:opacity .2s}.seq-line.current{opacity:1}.seq-line line,.seq-line path{stroke:#006e62;stroke-width:2;marker-end:url(#sequence-arrow);fill:none}.seq-line text{font:13px system-ui;fill:var(--ink)}.failure-box{padding:20px;background:#fff3e2;border-radius:8px;border:1px solid #e7c8a2}.failure-box select{display:block;width:100%;margin:12px 0;padding:10px;border:1px solid #c4a37a;border-radius:5px;background:#fff}.failure-box p{min-height:84px;font-size:14px}.scope{display:grid;grid-template-columns:100px 1fr;gap:10px;border-bottom:1px solid var(--line);padding:12px 0;font-size:14px}.scope:last-child{border:0}.scope b{color:var(--teal)}.pipeline{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:24px 0}.pipeline div{flex:1;min-width:100px;border-top:3px solid var(--teal);padding:12px;background:#e7efe7;font-size:12px}.pipeline .device{background:var(--sand);border-color:var(--orange)}.pipeline span{display:block;font:11px ui-monospace,monospace;color:var(--muted);margin-bottom:5px}.calculator{background:#15333c;color:#f1faf4;border-radius:12px;padding:26px}.calculator .muted{color:#adc7c6}.calculator h3{margin-top:0;color:#fff}.calculator input{width:100%;accent-color:#76dab4}.calculator label{display:block;margin-top:20px;font-size:14px}.calculator output{font-variant-numeric:tabular-nums}.bar-row{display:grid;grid-template-columns:82px 1fr 65px;gap:10px;align-items:center;margin:16px 0;font-size:12px}.bar-track{background:#2b4850;height:18px;border-radius:3px;overflow:hidden}.bar-fill{height:100%;background:#89d8b7;width:45%;transition:width .2s}.bar-fill.device{background:#efb765}.speed{font-size:42px;font-weight:740;letter-spacing:-.04em;color:#b2f0cf}.calc-note{font-size:12px;color:#c1d3ce;min-height:42px}.phase-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:7px;margin:25px 0}.phase-strip button{padding:13px 7px;text-align:left;font-size:12px}.phase-strip strong{display:block;font-size:22px}.phase-panel{background:#fff;padding:26px;border:1px solid var(--line);border-radius:9px;min-height:220px}.phase-panel h3{margin-top:0}.phase-meta{color:var(--teal);font-size:12px;font-weight:700;margin-bottom:10px}.phase-panel ul{padding-left:22px;font-size:14px}.dependencies{font:12px ui-monospace,monospace;padding:15px 18px;background:#e9eee7;border-radius:7px;overflow:auto}.example-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:20px 0}.example-tabs button{font-size:13px}.example-panel{min-width:0}.example-title{display:flex;justify-content:space-between;align-items:center;gap:10px}.example-title button{font-size:12px}.example-panel .small{color:var(--muted)}[hidden]{display:none!important}details{background:#fff;border-top:1px solid var(--line);padding:15px 18px}details:first-child{border-radius:8px 8px 0 0}details:last-child{border-radius:0 0 8px 8px}summary{cursor:pointer;font-size:14px;font-weight:650}details p{margin:12px 0 0;font-size:14px}.source-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}.source-grid a{padding:12px 0;border-bottom:1px solid var(--line);font-size:13px}.callout{font-size:23px;font-weight:620;line-height:1.45;letter-spacing:-.02em;padding:25px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:26px 0}.footer{padding:35px 0;font-size:12px;color:var(--muted)}.print-only{display:none}noscript .note{margin-top:20px}
+@media(min-width:1550px){main{margin-right:auto}}@media(max-width:1100px){:root{--rail:195px}aside{padding:30px 15px}main{padding-left:30px;padding-right:30px}.hero-grid{grid-template-columns:1fr}.hero-figure{max-width:520px}.three-col{grid-template-columns:1fr}.step-track{flex-wrap:wrap}.step-track button{min-width:70px}.two-col{gap:18px}.phase-strip{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){:root{--rail:0px}aside{position:relative;width:auto;height:auto;padding:20px;border-right:0;border-bottom:1px solid var(--line)}.rail-caption{margin:0 0 12px}nav{display:flex;overflow:auto;gap:5px}nav a{white-space:nowrap;padding:7px}.rail-footer{display:none}main{padding:30px 20px}.hero{padding-top:0}.two-col,.source-grid{grid-template-columns:1fr}.section-head{display:block}.doc-link{display:block;margin-bottom:14px}section{padding:38px 0}.diagram{padding:12px;overflow:auto}.diagram svg{min-width:550px}.hero-figure svg{min-width:0}.lead{font-size:18px}.controls .small{margin-left:0;width:100%}.step-track button{min-width:65px}.step-copy{min-height:160px}.scope{grid-template-columns:85px 1fr}.phase-panel{min-height:260px}.panel{padding:20px}table{font-size:12px}.calculator{padding:20px}.example-title{align-items:flex-start}.section-head h2{margin-bottom:12px}h1{font-size:44px}.pills{margin-top:12px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}@media print{@page{size:A4;margin:14mm}body{background:white;font-size:10pt;line-height:1.45}aside,.progress,.controls,.example-tabs,.phase-strip,.no-print,.actions,.step-track,.failure-box select,.calculator input,.example-title button{display:none!important}main{margin:0;padding:0;max-width:none}h1{font-size:34pt}h2{font-size:23pt}h3{font-size:14pt}section{padding:22px 0;break-inside:auto}.hero{padding:10px 0 20px}.hero-grid{grid-template-columns:1.2fr .8fr}.hero-figure{max-width:none}.two-col{grid-template-columns:1fr 1fr}.diagram{break-inside:avoid;padding:12px}.diagram svg{min-width:0;max-height:300px}.panel,.phase-panel,pre{break-inside:avoid}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f4f1;color:#142d36;font-size:8pt}.print-only{display:block}.phase-panel[hidden],.example-panel[hidden]{display:block!important;margin:14px 0}.phase-panel,.step-copy{min-height:0}td,th{padding:8px}table{min-width:0;font-size:9pt}a{color:#114f46}.seq-line{opacity:1}.owner-node.dim{opacity:1}.calculator{background:#edf4ef;color:#162c36}.calculator h3,.calculator .muted,.calc-note{color:#304d49}.speed{color:#006451}.source-grid{grid-template-columns:1fr 1fr}.badge{font-size:8pt}.table-wrap{overflow:visible}.table-wrap tr[hidden]{display:table-row!important}.footer{padding:16px 0}.failure-box p{min-height:0}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to guide</a>
+<div class="progress" aria-hidden="true"><span id="reading-progress"></span></div>
+<aside>
+<a class="brand" href="#start">Lance<i> /</i></a>
+<div class="rail-caption">Distributed architecture<br>Contributor field guide · 2026</div>
+<nav aria-label="Guide sections">
+<a href="#evidence"><span>01</span>What exists</a>
+<a href="#architecture"><span>02</span>Ownership &amp; seams</a>
+<a href="#protocol"><span>03</span>Work &amp; recovery</a>
+<a href="#sql-ray"><span>04</span>SQL meets Ray</a>
+<a href="#npu"><span>05</span>NPU acceleration</a>
+<a href="#upgrade"><span>06</span>Build for upgrades</a>
+<a href="#roadmap"><span>07</span>The phased plan</a>
+<a href="#examples"><span>08</span>Examples &amp; schemas</a>
+<a href="#reading"><span>09</span>Read &amp; contribute</a>
+</nav>
+<div class="rail-footer">Evidence reviewed<br><strong>13 November 2026</strong><br><br>Local, self-contained HTML.<br>Architecture is proposed.<br>Performance is unmeasured.<br><br><a href="distributed-extensibility-plan.md">Open the full plan ↗</a></div>
+</aside>
+<main id="main">
+<header class="hero" id="start">
+<div class="eyebrow">Storage foundations / distributed systems / extensibility</div>
+<div class="hero-grid">
+<div><h1>Distributed Lance,<br>built to evolve.</h1>
+<p class="lead">Connect SQL engines, Ray workers and optional NPU compute through clear contracts. Keep storage correctness in one place.</p>
+<div class="pills"><span class="pill">PostgreSQL reference</span><span class="pill">Ray orchestration</span><span class="pill">Ascend qualification</span></div>
+<div class="actions"><a class="action" href="#evidence">Start the walkthrough ↓</a><a class="action secondary" href="distributed-extensibility-plan.md">Read the implementation plan ↗</a></div>
+</div>
+<figure class="hero-figure">
+<svg viewBox="0 0 400 390" role="img" aria-labelledby="hero-title hero-desc">
+<title id="hero-title">Proposed composition around Lance</title><desc id="hero-desc">SQL and Ray adapters use the Lance semantic core. Core algorithms can use CPU or an optional NPU backend, and the core writes canonical data to shared storage.</desc>
+<defs><marker id="hero-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#006e62"/></marker></defs>
+<g fill="none" stroke="#006e62" stroke-width="1.5" marker-end="url(#hero-arrow)"><path d="M95 83 V119 H160 V146"/><path d="M305 83 V119 H240 V146"/><path d="M145 207 V239 H95 V264"/><path d="M255 207 V239 H305 V264"/><path d="M200 208 V342"/></g>
+<rect x="25" y="28" width="140" height="55" rx="8" class="svg-proposed"/><text x="95" y="62" text-anchor="middle" class="svg-label">SQL adapter</text>
+<rect x="235" y="28" width="140" height="55" rx="8" class="svg-proposed"/><text x="305" y="62" text-anchor="middle" class="svg-label">Ray adapter</text>
+<rect x="75" y="146" width="250" height="62" rx="8" class="svg-core"/><text x="200" y="174" text-anchor="middle" class="svg-label">Lance semantic core</text><text x="200" y="195" text-anchor="middle" class="svg-small">snapshots · indices · publication</text>
+<rect x="25" y="264" width="140" height="52" rx="8" class="svg-box"/><text x="95" y="296" text-anchor="middle" class="svg-label">CPU backend</text>
+<rect x="235" y="264" width="140" height="52" rx="8" class="svg-proposed"/><text x="305" y="296" text-anchor="middle" class="svg-label">NPU backend</text>
+<rect x="70" y="343" width="260" height="36" rx="6" class="svg-box"/><text x="200" y="366" text-anchor="middle" class="svg-small">Canonical data · shared storage</text>
+</svg>
+<figcaption>Target ownership, not a deployed product. Dashed boxes show integration work proposed by this plan.</figcaption>
+</figure></div>
+<div class="baseline"><strong>Read the evidence correctly.</strong> Inspected code: <code>042ccc837</code>, workspace <code>15.0.0-beta.10</code>. Latest stable checked: <code>v14.0.2</code>. Public main was newer at research time. <a href="docs/07-ecosystem-evidence.md">Exact commits, dates and sources →</a></div>
+<noscript><div class="note">JavaScript is disabled. The architecture, evidence and linked documents remain readable. Enable JavaScript for the interactive exercises, phase selector and example tabs; the complete content is also available in the linked Markdown chapters.</div></noscript>
+</header>
+
+<section id="evidence">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">01</span>Start with what is real</div><h2>Useful distributed pieces already exist.</h2></div><a class="doc-link" href="docs/06-distributed-current-state.md">Code-backed audit ↗</a></div>
+<p class="lead">The highest-value work is strengthening the existing pieces and the contracts between them.</p>
+<div class="controls" aria-label="Filter capabilities"><button type="button" data-filter="all" aria-pressed="true">All capabilities</button><button type="button" data-filter="available" aria-pressed="false">Available foundations</button><button type="button" data-filter="needed" aria-pressed="false">Work to qualify</button><span class="small muted" id="cap-count" aria-live="polite">9 capabilities</span></div>
+<div class="table-wrap"><table id="capabilities"><thead><tr><th>Capability</th><th>Evidence status</th><th>What the plan adds</th></tr></thead><tbody>
+<tr data-maturity="available"><td>Parallel writes</td><td><span class="badge ready">Inspected core</span></td><td>Durable task/attempt state and replay-safe publication.</td></tr>
+<tr data-maturity="available"><td>Index build &amp; maintenance plans</td><td><span class="badge ready">Inspected core</span></td><td>Recovery, capability admission and complete job provenance.</td></tr>
+<tr data-maturity="available"><td>Distributed vector search</td><td><span class="badge ready">Lance-Ray v0.5.0</span></td><td>Bounded fallback memory, consistent semantics and service lifecycle.</td></tr>
+<tr data-maturity="available"><td>Metadata &amp; storage providers</td><td><span class="badge ready">Inspected core</span></td><td>Conformance for each chosen authority/provider and safe cleanup.</td></tr>
+<tr data-maturity="available"><td>Streaming ingestion / MemWAL</td><td><span class="badge ready">Inspected core</span></td><td>Placement, failover and deployment qualification around existing fencing.</td></tr>
+<tr data-maturity="needed"><td>Modern PostgreSQL integration</td><td><span class="badge limit">Early pglance baseline</span></td><td>Dependency update, snapshot/type guarantees, costing and safe pushdown.</td></tr>
+<tr data-maturity="needed"><td>Ascend compute in Lance</td><td><span class="badge proposal">Proposed qualification</span></td><td>Optional kernels, quality/transfer benchmarks and canonical artifacts.</td></tr>
+<tr data-maturity="needed"><td>Durable distributed coordinator</td><td><span class="badge proposal">Proposed integration</span></td><td>Recoverable records, enforced fencing, publication reconciliation.</td></tr>
+<tr data-maturity="needed"><td>Independent extension upgrades</td><td><span class="badge limit">Contracts need work</span></td><td>Versioned adapters and conformance; Rust plugins still need rebuilds.</td></tr>
+</tbody></table></div>
+<div class="note teal"><strong>Public product boundary.</strong> LanceDB has an open-source embedded library and a separate commercial distributed service. Shared storage improvements can benefit LanceDB and Huawei while each owns its operational policy and product integrations. This is a proposed alignment, not an agreement. <a href="docs/07-ecosystem-evidence.md">Primary evidence →</a></div>
+<p class="small muted">“Inspected” means present in the development source. “Released” identifies an artifact, not production certification. No cluster, SQL or NPU performance claim is made here.</p>
+</section>
+
+<section id="architecture">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">02</span>Keep each invariant with its owner</div><h2>One owner for every guarantee.</h2></div><a class="doc-link" href="docs/08-extensible-target-architecture.md">Architecture &amp; decisions ↗</a></div>
+<p>SQL semantics belong to the engine. Scheduling belongs to the orchestrator. Lance owns row visibility, model/index validity and publication. Device backends execute bounded numerical operations.</p>
+<div class="controls" aria-label="Explore responsibilities"><button type="button" data-owner="sql" aria-pressed="true">SQL engine</button><button type="button" data-owner="ray" aria-pressed="false">Ray coordinator</button><button type="button" data-owner="core" aria-pressed="false">Lance core</button><button type="button" data-owner="device" aria-pressed="false">Compute backend</button></div>
+<figure class="diagram">
+<div class="diagram-title">Proposed boundaries on existing foundations</div>
+<svg viewBox="0 0 900 430" role="img" aria-labelledby="arch-title arch-desc"><title id="arch-title">Ownership and dependency direction</title><desc id="arch-desc">SQL and Ray adapters pass requests through a shared operation contract into Lance. Lance maintains dataset correctness and delegates storage and compute. Namespace and publication authority are separate from job state.</desc>
+<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#76968b"/></marker></defs>
+<g class="owner-node selected" data-node="sql"><rect x="20" y="15" width="260" height="72" rx="8" class="svg-proposed"/><text x="150" y="44" text-anchor="middle" class="svg-label">SQL adapter</text><text x="150" y="67" text-anchor="middle" class="svg-small">planner · types · SQL transactions</text></g>
+<g class="owner-node" data-node="ray"><rect x="320" y="15" width="260" height="72" rx="8" class="svg-proposed"/><text x="450" y="44" text-anchor="middle" class="svg-label">Ray + durable coordinator</text><text x="450" y="67" text-anchor="middle" class="svg-small">placement · attempts · recovery</text></g>
+<rect x="620" y="15" width="260" height="72" rx="8" class="svg-box"/><text x="750" y="44" text-anchor="middle" class="svg-label">Namespace / catalog</text><text x="750" y="67" text-anchor="middle" class="svg-small">table identity · access · location</text>
+<path d="M150 87 V118" class="svg-line"/><path d="M450 87 V118" class="svg-line"/><path d="M750 87 V118" class="svg-line"/>
+<rect x="20" y="121" width="860" height="46" rx="5" class="svg-proposed"/><text x="450" y="150" text-anchor="middle" class="svg-label">Pinned snapshot + native plan + capabilities + resource budget</text>
+<path d="M450 167 V200" class="svg-line"/>
+<g class="owner-node" data-node="core"><rect x="20" y="204" width="860" height="90" rx="8" class="svg-core"/><text x="450" y="235" text-anchor="middle" class="svg-label">Lance semantic owners</text><text x="450" y="259" text-anchor="middle" class="svg-small">scanner visibility · lifecycle validation · manifest publication</text><text x="450" y="281" text-anchor="middle" class="svg-mini">Existing: lance / lance-table / lance-index / lance-linalg</text></g>
+<path d="M150 294 V330" class="svg-line"/><path d="M450 294 V330" class="svg-line"/><path d="M750 294 V330" class="svg-line"/>
+<rect x="20" y="334" width="260" height="72" rx="8" class="svg-box"/><text x="150" y="362" text-anchor="middle" class="svg-label">Canonical files &amp; I/O</text><text x="150" y="385" text-anchor="middle" class="svg-small">encoding · providers · cache</text>
+<rect x="320" y="334" width="260" height="72" rx="8" class="svg-box"/><text x="450" y="362" text-anchor="middle" class="svg-label">Publication authority</text><text x="450" y="385" text-anchor="middle" class="svg-small">one chosen commit handler</text>
+<g class="owner-node" data-node="device"><rect x="620" y="334" width="260" height="72" rx="8" class="svg-proposed"/><text x="750" y="362" text-anchor="middle" class="svg-label">CPU / optional Ascend</text><text x="750" y="385" text-anchor="middle" class="svg-small">batch numerical contract</text></g>
+</svg><figcaption>Existing Rust crates retain semantic ownership. The operation envelope and optional compute seam are proposed; they are not an existing stable ABI.</figcaption><div class="legend"><span><i></i>Existing owner / foundation</span><span><i class="draft"></i>Proposed integration contract</span></div></figure>
+<div class="owner-panel" aria-live="polite"><h3 id="owner-title">SQL engine: decide what the query means.</h3><p id="owner-text">Keep joins, SQL types, collations and transaction semantics in the engine. The adapter maps a supported scan/search request and keeps unsupported predicates local.</p></div>
+<div class="two-col" style="margin-top:24px"><div><h3>Useful seams already present</h3><p class="small">CommitHandler · ExternalManifestStore · ObjectStoreProvider · CompactionPlanner · native optimization plans · scalar plugin registry.</p></div><div><h3>Coupling to address carefully</h3><p class="small">DataFusion component types still appear in core interfaces. Scalar plugins are version-coupled. The custom vector loader accepts a legacy reader. Use additive, current-format contracts where a real use case needs them.</p></div></div>
+</section>
+
+<section id="protocol">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">03</span>Distributed execution is a protocol</div><h2>Compute can retry. Publication must reconcile.</h2></div><a class="doc-link" href="docs/13-examples-and-contracts.md">Proposed records &amp; algorithm ↗</a></div>
+<p>Workers create immutable artifacts. A coordinator selects results, validates the intended job and publishes through Lance. Durable recovery state lives beyond an actor's memory.</p>
+<div class="step-track" aria-label="Explore operation stages"><button type="button" data-step="0" aria-pressed="true"><b>1</b>Pin &amp; plan</button><button type="button" data-step="1" aria-pressed="false"><b>2</b>Dispatch</button><button type="button" data-step="2" aria-pressed="false"><b>3</b>Build</button><button type="button" data-step="3" aria-pressed="false"><b>4</b>Validate</button><button type="button" data-step="4" aria-pressed="false"><b>5</b>Publish</button><button type="button" data-step="5" aria-pressed="false"><b>6</b>Reconcile</button></div>
+<figure class="diagram"><svg viewBox="0 0 840 390" role="img" aria-labelledby="seq-title seq-desc"><title id="seq-title">Plan, execute, validate and publish sequence</title><desc id="seq-desc">The coordinator stores a pinned plan, dispatches workers, receives artifact descriptors, validates attempts and coverage, publishes through Lance, and reconciles the authoritative result.</desc>
+<defs><marker id="sequence-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#006e62"/></marker></defs>
+<g class="svg-small" text-anchor="middle"><text x="100" y="25">Coordinator + ledger</text><text x="310" y="25">Workers</text><text x="520" y="25">Artifact storage</text><text x="730" y="25">Lance authority</text></g>
+<g stroke="#cfdbd2" stroke-dasharray="4 5"><line x1="100" y1="40" x2="100" y2="375"/><line x1="310" y1="40" x2="310" y2="375"/><line x1="520" y1="40" x2="520" y2="375"/><line x1="730" y1="40" x2="730" y2="375"/></g>
+<g class="seq-line current" data-seq="0"><path d="M100 59 H156 V80 H103"/><text x="170" y="73">Persist snapshot, plan and retention requirement</text></g>
+<g class="seq-line" data-seq="1"><line x1="100" y1="122" x2="305" y2="122"/><text x="126" y="111">Admitted task + budget</text></g>
+<g class="seq-line" data-seq="2"><line x1="310" y1="176" x2="515" y2="176"/><text x="329" y="164">Fresh output per attempt</text></g>
+<g class="seq-line" data-seq="3"><line x1="310" y1="230" x2="105" y2="230"/><text x="120" y="218">Descriptors → barrier</text><text x="365" y="236">Coverage + source + model + attempt</text></g>
+<g class="seq-line" data-seq="4"><line x1="100" y1="287" x2="725" y2="287"/><text x="272" y="276">Validated intent → authoritative commit</text></g>
+<g class="seq-line" data-seq="5"><line x1="730" y1="345" x2="105" y2="345"/><text x="274" y="334">Known committed version or explicit recovery action</text></g>
+</svg><figcaption>Conceptual coordinator flow. Job fencing and deduplication must be implemented and enforced; merely including an epoch field does not provide them.</figcaption></figure>
+<div class="two-col"><div class="panel step-copy" aria-live="polite"><div class="eyebrow" id="step-state">PLANNED</div><h3 id="step-title">Pin the source and persist the plan.</h3><p id="step-text">Bind table identity, incarnation, branch, manifest version, schema, fields and model parameters. Protect the source snapshot through the job and its recovery window.</p><div class="controls"><button type="button" id="prev-step" disabled>← Previous</button><button type="button" id="next-step">Next →</button></div></div>
+<div class="failure-box"><label for="failure-mode"><strong>Explore a failure</strong></label><select id="failure-mode"><option value="worker">Worker dies after writing</option><option value="duplicate">Two attempts succeed</option><option value="commit">Commit succeeds; reply is lost</option><option value="source">Source changes during the job</option><option value="gc">Cleanup overlaps the build</option><option value="fence">Old coordinator comes back</option></select><p id="failure-text" aria-live="polite">Retry with a fresh artifact identity. Select one successful attempt. Keep unreferenced objects through the recovery window; a failed task may still have written data.</p><span class="badge proposal">Proposed recovery requirements</span></div></div>
+<p class="small muted" style="margin-top:18px">One successful task result is not a committed dataset. Exactly-once visibility must be demonstrated per operation; retries are not exactly-once execution. See the <a href="docs/12-validation-and-experiments.md">failure matrix</a>.</p>
+</section>
+
+<section id="sql-ray">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">04</span>Two integrations, shared semantics</div><h2>Pin a snapshot before distributing work.</h2></div><a class="doc-link" href="docs/09-sql-and-ray-integration.md">SQL &amp; Ray design ↗</a></div>
+<div class="two-col"><div><h3>PostgreSQL-family path</h3><div class="scope"><b>First</b><span>Qualify the existing pglance baseline against one engine/Lance/Arrow combination.</span></div><div class="scope"><b>Then</b><span>Statement-scoped snapshot reads, streaming, cancellation, safe types and pushdown.</span></div><div class="scope"><b>Later</b><span>Transaction-wide external snapshots or coordinated writes need their own tested protocol.</span></div></div><div><h3>Ray path</h3><div class="scope"><b>First</b><span>Measure existing reads, builds, compaction and vector search.</span></div><div class="scope"><b>Then</b><span>Durable recovery, bounded fallback scans and compaction-aware work assignment.</span></div><div class="scope"><b>Measure</b><span>Worker/native thread multiplication, queue time, driver candidates and concurrent-query lifecycle.</span></div></div></div>
+<figure class="diagram"><div class="diagram-title">Query ownership at snapshot v42 — illustrative partitioning</div><svg viewBox="0 0 900 330" role="img" aria-labelledby="query-title query-desc"><title id="query-title">Segment-owned distributed vector search</title><desc id="query-desc">One task owns segment A covering fragments 0 and 1, another owns segment B covering fragment 2, and a fallback task owns uncovered fragment 3. All use snapshot 42 and send bounded candidates to one global merge.</desc>
+<rect x="20" y="16" width="860" height="42" rx="6" class="svg-core"/><text x="450" y="43" text-anchor="middle" class="svg-label">Snapshot v42 + filters + projection + search parameters</text>
+<path d="M150 58 V88" class="svg-line"/><path d="M450 58 V88" class="svg-line"/><path d="M750 58 V88" class="svg-line"/>
+<rect x="20" y="92" width="260" height="90" rx="7" class="svg-box"/><text x="150" y="119" text-anchor="middle" class="svg-label">Task A → segment A</text><text x="150" y="144" text-anchor="middle" class="svg-small">fragments 0, 1</text><text x="150" y="166" text-anchor="middle" class="svg-mini">Lance visibility + local candidates</text>
+<rect x="320" y="92" width="260" height="90" rx="7" class="svg-box"/><text x="450" y="119" text-anchor="middle" class="svg-label">Task B → segment B</text><text x="450" y="144" text-anchor="middle" class="svg-small">fragment 2</text><text x="450" y="166" text-anchor="middle" class="svg-mini">Lance visibility + local candidates</text>
+<rect x="620" y="92" width="260" height="90" rx="7" class="svg-proposed"/><text x="750" y="119" text-anchor="middle" class="svg-label">Task C → flat fallback</text><text x="750" y="144" text-anchor="middle" class="svg-small">uncovered fragment 3</text><text x="750" y="166" text-anchor="middle" class="svg-mini">bounded execution proposed</text>
+<path d="M150 182 V216 H390 V246" class="svg-line"/><path d="M450 182 V246" class="svg-line"/><path d="M750 182 V216 H510 V246" class="svg-line"/>
+<rect x="210" y="250" width="480" height="61" rx="7" class="svg-core"/><text x="450" y="276" text-anchor="middle" class="svg-label">Global candidate merge / optional exact rerank</text><text x="450" y="298" text-anchor="middle" class="svg-small">same snapshot · explicit ANN quality contract</text>
+</svg><figcaption>Index segments own fragment coverage. Arbitrary fragment splitting can search a spanning segment more than once. An uncovered fragment must also be handled exactly once.</figcaption></figure>
+<div class="two-col"><div class="note"><strong>ANN is approximate.</strong> Sorting local candidate lists cannot recover missed neighbors. Oversampling and reranking need recall measurements against exact ground truth.</div><div class="note teal"><strong>SQL compatibility has layers.</strong> A PostgreSQL-compatible dialect does not establish FDW ABI compatibility. Qualify the exact openGauss/GaussDB-family engine separately.</div></div>
+<p class="small muted">Candidate payload is approximately workers × local candidate limit × row width. Keep wide columns out of this exchange where possible. Separate FTS ranking, joins and aggregation from vector top-k semantics.</p>
+</section>
+
+<section id="npu">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">05</span>Qualify acceleration end to end</div><h2>Device placement is only the first step.</h2></div><a class="doc-link" href="docs/10-npu-acceleration.md">NPU architecture &amp; matrix ↗</a></div>
+<p>Ray advertises experimental, community-supported Ascend scheduling. The planned Lance backend still needs supported operations, numerical checks and a pinned TorchNPU/CANN/hardware environment.</p>
+<div class="pipeline" role="list" aria-label="Proposed NPU data path"><div role="listitem"><span>01 / HOST</span>Bounded Arrow batch</div><div role="listitem"><span>02 / TRANSFER</span>Validate, convert, H2D</div><div class="device" role="listitem"><span>03 / NPU</span>Batch operation</div><div role="listitem"><span>04 / RETURN</span>Complete, validate, D2H</div><div role="listitem"><span>05 / LANCE</span>Canonical model / index</div></div>
+<div class="two-col"><div><h3>A staged sequence</h3><div class="scope"><b>1. Pipeline</b><span>Generate embeddings externally on NPU; write ordinary Lance vectors.</span></div><div class="scope"><b>2. Kernel</b><span>Prototype IVF assignment or exact reranking against a CPU reference.</span></div><div class="scope"><b>3. Training</b><span>Validate sampling, precision, shared model identity and convergence.</span></div><div class="scope"><b>4. Product</b><span>Promote only with measured benefit, explicit fallbacks and CPU-readable artifacts.</span></div><p class="small muted" style="margin-top:18px">Default builds keep vendor dependencies optional. Invalid models and device errors must not be silently reported as successful CPU execution.</p></div>
+<div class="calculator"><span class="badge proposal">Illustrative numbers · not a benchmark</span><h3 style="margin-top:14px">When transfers erase a kernel win</h3><p class="small muted">CPU compute: 80 ms. NPU compute: 8 ms. Device dispatch: 5 ms. Shared read/write: 30 ms.</p><label for="transfer-ms">Conversion + H2D + D2H: <output id="transfer-value" for="transfer-ms">20 ms</output></label><input type="range" id="transfer-ms" min="0" max="150" step="1" value="20">
+<div class="bar-row"><span>CPU total</span><div class="bar-track"><div id="cpu-bar" class="bar-fill" style="width:56.99%"></div></div><span>110 ms</span></div><div class="bar-row"><span>NPU total</span><div class="bar-track"><div id="npu-bar" class="bar-fill device" style="width:32.64%"></div></div><output id="npu-total">63 ms</output></div><div><output class="speed" id="speedup">1.75×</output><span class="small muted"> relative end-to-end speed</span></div><p class="calc-note" id="calc-result" aria-live="polite">The illustrative NPU path is faster. Transfer costs are included; overlap and queuing are omitted.</p></div></div>
+<p class="small muted" style="margin-top:20px">Promotion target proposed by the plan: ≥1.5× for one measured end-to-end workload at equal quality. The slider demonstrates a cost model, not an expected Ascend result.</p>
+</section>
+
+<section id="upgrade">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">06</span>Make the next upgrade easier</div><h2>Keep product logic behind narrow contracts.</h2></div><a class="doc-link" href="docs/11-upstream-and-upgrade-strategy.md">Cooperation &amp; upgrade strategy ↗</a></div>
+<p>Shared invariants and tests belong upstream. Engine adapters, device implementations and deployment policies can evolve in their own packages. Measure upgrade effort to find out whether the boundaries work.</p>
+<figure class="diagram"><svg viewBox="0 0 900 240" role="img" aria-labelledby="upgrade-title upgrade-desc"><title id="upgrade-title">Upgrade boundary for an internal feature</title><desc id="upgrade-desc">Product-specific logic depends on a small compatibility adapter which uses the Lance operation contract. The adapter is recompiled and tested when Lance changes; stable data remains subject to the file-format contract.</desc>
+<rect x="20" y="25" width="250" height="75" rx="8" class="svg-proposed"/><text x="145" y="54" text-anchor="middle" class="svg-label">Product / internal logic</text><text x="145" y="78" text-anchor="middle" class="svg-small">algorithm, policy, deployment</text>
+<rect x="325" y="25" width="250" height="75" rx="8" class="svg-proposed"/><text x="450" y="54" text-anchor="middle" class="svg-label">Compatibility adapter</text><text x="450" y="78" text-anchor="middle" class="svg-small">small, versioned, replaceable</text>
+<rect x="630" y="25" width="250" height="75" rx="8" class="svg-core"/><text x="755" y="54" text-anchor="middle" class="svg-label">Lance public contract</text><text x="755" y="78" text-anchor="middle" class="svg-small">capabilities + conformance</text>
+<path d="M270 63 H320" class="svg-line"/><path d="M575 63 H625" class="svg-line"/>
+<path d="M450 100 V144" class="svg-line"/><path d="M755 100 V144" class="svg-line"/>
+<rect x="325" y="148" width="250" height="65" rx="8" class="svg-box"/><text x="450" y="175" text-anchor="middle" class="svg-label">Rebuild + run upgrade tests</text><text x="450" y="195" text-anchor="middle" class="svg-small">Rust ABI is not promised stable</text>
+<rect x="630" y="148" width="250" height="65" rx="8" class="svg-box"/><text x="755" y="175" text-anchor="middle" class="svg-label">Stable file contracts</text><text x="755" y="195" text-anchor="middle" class="svg-small">preserve released compatibility</text>
+</svg><figcaption>Proposed direction: retain internal business logic and concentrate necessary adaptation. This does not promise zero maintenance or an existing stable plugin ABI.</figcaption></figure>
+<div class="table-wrap"><table><thead><tr><th>Shared contribution</th><th>LanceDB / community value</th><th>Huawei value</th></tr></thead><tbody><tr><td>Provenance + recovery</td><td>Reliable builders across schedulers</td><td>Fewer correctness patches</td></tr><tr><td>Bounded execution + metrics</td><td>Predictable service behavior</td><td>SQL/Ray integration reuse</td></tr><tr><td>Optional compute contracts</td><td>More hardware choices</td><td>Ascend backend isolation</td></tr><tr><td>Capability + conformance tests</td><td>Safer releases and adapters</td><td>Less repeated upgrade work</td></tr></tbody></table></div>
+<div class="three-col"><div><h3>Stable formats</h3><p class="small">Honor released backward/forward contracts. Preserve legacy read behavior and use historical fixtures.</p></div><div><h3>Unstable revisions</h3><p class="small">Allow redesign. Do not add migrations or compatibility scaffolding for intermediate unstable formats.</p></div><div><h3>Private extensions</h3><p class="small">Use tested adapters, reference implementations and an explicit patch ledger. Keep new functionality off legacy writers/loaders.</p></div></div>
+</section>
+
+<section id="roadmap">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">07</span>Retire risk in dependency order</div><h2>A plan with evidence at every gate.</h2></div><a class="doc-link" href="distributed-extensibility-plan.md">Full backlog, owners &amp; risks ↗</a></div>
+<p>Indicative 22-week program with six engineering roles, available Ascend hardware and upstream review capacity. Dates are planning assumptions; experiments decide promotion.</p>
+<div class="phase-strip" role="tablist" aria-label="Roadmap phases"><button id="phase-tab-0" type="button" role="tab" aria-controls="phase-0" aria-selected="true" data-phase="0"><strong>P0</strong>Weeks 1–2<br>Baseline</button><button id="phase-tab-1" type="button" role="tab" aria-controls="phase-1" aria-selected="false" data-phase="1" tabindex="-1"><strong>P1</strong>Weeks 3–6<br>Contracts</button><button id="phase-tab-2" type="button" role="tab" aria-controls="phase-2" aria-selected="false" data-phase="2" tabindex="-1"><strong>P2</strong>Weeks 5–10<br>Ray</button><button id="phase-tab-3" type="button" role="tab" aria-controls="phase-3" aria-selected="false" data-phase="3" tabindex="-1"><strong>P3</strong>Weeks 7–12<br>SQL</button><button id="phase-tab-4" type="button" role="tab" aria-controls="phase-4" aria-selected="false" data-phase="4" tabindex="-1"><strong>P4</strong>Weeks 9–16<br>NPU</button><button id="phase-tab-5" type="button" role="tab" aria-controls="phase-5" aria-selected="false" data-phase="5" tabindex="-1"><strong>P5</strong>Weeks 17–22<br>Qualification</button></div>
+<div id="phase-0" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-0"><div class="phase-meta">P0 · Core lead + all owners · weeks 1–2</div><h3>Reproduce before redesigning.</h3><p>Confirm engine, workloads, deployment objectives and hardware. Pin stable/development matrices and inventory private patches.</p><ul><li>Reproduce Ray data/search and a pglance scan.</li><li>Profile bottlenecks and measure current upgrade effort.</li><li>Exit: baseline reports and bounded first RFCs.</li></ul></div>
+<div id="phase-1" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-1" hidden><div class="phase-meta">P1 · Storage/runtime + core · weeks 3–6</div><h3>Make one operation recoverable.</h3><p>Add a durable execution record around native plans. Validate identity, capabilities, attempts, coverage and publication outcome.</p><ul><li>Enforce fencing and protect source/artifact retention.</li><li>Inject failures at each stage, including a lost commit reply.</li><li>Exit: known outcomes and rejected incompatible workers.</li></ul></div>
+<div id="phase-2" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-2" hidden><div class="phase-meta">P2 · Ray engineer + core · weeks 5–10</div><h3>Bound distributed work.</h3><p>Improve existing Lance-Ray fallback scans, fragment grouping, cancellation and maintenance recovery.</p><ul><li>Measure 1/2/4/8-worker scaling and driver growth.</li><li>Compare compaction-aware segment assignment policies.</li><li>Exit: memory, quality and recovery gates.</li></ul></div>
+<div id="phase-3" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-3" hidden><div class="phase-meta">P3 · SQL engineer · weeks 7–12</div><h3>Qualify the SQL boundary.</h3><p>Modernize pglance, choose process isolation and establish snapshot, type and predicate guarantees.</p><ul><li>Exercise streaming, rescans, cancellation and EXPLAIN.</li><li>Keep unsupported predicates local and writes separately scoped.</li><li>Exit: an explicit tested engine/feature matrix.</li></ul></div>
+<div id="phase-4" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-4" hidden><div class="phase-meta">P4 · NPU engineer + core · weeks 9–16</div><h3>Promote a kernel only after measuring.</h3><p>Qualify the runtime, demonstrate an embedding pipeline, then test a bounded assignment/rerank prototype.</p><ul><li>Validate numerical quality and CPU-readable artifacts.</li><li>Include conversion, transfers and memory in measurements.</li><li>Exit: useful end-to-end benefit or an explicit decision to stop.</li></ul></div>
+<div id="phase-5" class="phase-panel" role="tabpanel" aria-labelledby="phase-tab-5" hidden><div class="phase-meta">P5 · Test/performance + all owners · weeks 17–22</div><h3>Prove the integrated system can evolve.</h3><p>Run soak/failure tests and a stable-release upgrade rehearsal. Package supported combinations and operating procedures.</p><ul><li>Record remaining patches, adapter edits and engineer time.</li><li>Publish reproducible performance/quality reports.</li><li>Exit: conformance, known limits and upstream review outcomes.</li></ul></div>
+<div class="dependencies" style="margin-top:18px">Correctness dependency chain: P0 → P1 → P2 → P5. P3/P4 also join P5; P4 finishes in week 16 and controls P5’s week-17 start.</div>
+<div class="note"><strong>Decision gates, not promised numbers.</strong> Proposed initial gates include a measured NPU gain ≥1.5× at equal quality, CPU regression tolerance of 5% after variance checks, and recall at least 0.5 plus the stricter workload target. Recovery and upgrade objectives are set from the baseline. <a href="docs/12-validation-and-experiments.md">Complete experiment matrix →</a></div>
+</section>
+
+<section id="examples">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">08</span>Separate real APIs from design sketches</div><h2>Small examples, explicit prerequisites.</h2></div><a class="doc-link" href="docs/13-examples-and-contracts.md">Complete examples &amp; caveats ↗</a></div>
+<p class="small muted">Examples were checked against source signatures and are not integration test results. The complete chapter includes setup assumptions, a four-row local write demonstration, Ray search and an NPU scheduling probe.</p>
+<div class="example-tabs" role="tablist" aria-label="Example selection"><button type="button" id="example-tab-ray" role="tab" aria-controls="example-ray" aria-selected="true" data-example="ray">Existing Ray API</button><button type="button" id="example-tab-sql" role="tab" aria-controls="example-sql" aria-selected="false" data-example="sql" tabindex="-1">Existing SQL API</button><button type="button" id="example-tab-record" role="tab" aria-controls="example-record" aria-selected="false" data-example="record" tabindex="-1">Proposed record</button><button type="button" id="example-tab-recovery" role="tab" aria-controls="example-recovery" aria-selected="false" data-example="recovery" tabindex="-1">Recovery algorithm</button></div>
+<div class="example-panel" id="example-ray" role="tabpanel" aria-labelledby="example-tab-ray"><div class="example-title"><span class="badge ready">Published Lance-Ray surface</span><button type="button" data-copy="code-ray">Copy example</button></div><p class="small" style="margin-top:12px">Requires a running Ray cluster, matching packages and a shared dataset with 768-dimensional vectors. Application environment variables choose the source version.</p><pre><code id="code-ray">import os
+import lance
+import lance_ray as lr
+import numpy as np
+import ray
+
+ray.init(address="auto")
+snapshot = lance.dataset(
+    os.environ["LANCE_DATASET_URI"],
+    version=int(os.environ["LANCE_DATASET_VERSION"]),
+)
+result = lr.vector_search(
+    uri=snapshot,
+    nearest={"column": "vector", "q": np.full(768, 0.01, dtype=np.float32), "k": 10},
+    columns=["id"],
+    num_workers=2,
+    include_unindexed=True,
+)</code></pre><p class="small">This uses existing distributed search. It does not establish recall or memory bounds; the current flat fallback still needs attention. <a href="docs/07-ecosystem-evidence.md">Pinned source evidence →</a></p></div>
+<div class="example-panel" id="example-sql" role="tabpanel" aria-labelledby="example-tab-sql" hidden><div class="example-title"><span class="badge limit">Existing pglance surface · qualify dependencies</span><button type="button" data-copy="code-sql">Copy example</button></div><p class="small" style="margin-top:12px">After installing the extension in a compatible disposable PostgreSQL instance. Replace the path with a dataset readable by that server. The commands create database objects.</p><pre><code id="code-sql">CREATE EXTENSION lance;
+CREATE SERVER lance_demo FOREIGN DATA WRAPPER lance_fdw;
+SELECT lance_import(
+    'lance_demo', 'public', 'demo_vectors', '/srv/data/demo.lance'
+);
+SELECT count(*) FROM public.demo_vectors;</code></pre><p class="small">The extension is named <code>lance</code>; its repository/crate is <code>pglance</code>. No cross-system transaction or modern-Lance compatibility guarantee is implied. <a href="docs/13-examples-and-contracts.md">Source and prerequisites →</a></p></div>
+<div class="example-panel" id="example-record" role="tabpanel" aria-labelledby="example-tab-record" hidden><div class="example-title"><span class="badge proposal">Design sketch · no implemented wire protocol</span><button type="button" data-copy="code-record">Copy example</button></div><pre><code id="code-record">{
+  "protocol": "lance-execution-draft/1",
+  "operation_id": "example-build-0042",
+  "coordinator_epoch": 7,
+  "source": {
+    "table_id": ["research", "vectors"],
+    "incarnation": "example-generation-a",
+    "branch": "main",
+    "version": 42,
+    "schema_digest": "example-sha256-schema"
+  },
+  "required_capabilities": ["pinned-snapshot", "result-provenance"],
+  "task": {"id": "group-0", "attempt": 2, "fragment_ids": [0, 1]},
+  "state": "RUNNING"
+}</code></pre><p class="small">A production schema needs native plan/model digests, field constraints, actual result coverage and enforced fencing. Credentials travel separately. The full chapter provides a larger illustrative record.</p></div>
+<div class="example-panel" id="example-recovery" role="tabpanel" aria-labelledby="example-tab-recovery" hidden><div class="example-title"><span class="badge proposal">Conceptual algorithm · not API calls</span><button type="button" data-copy="code-recovery">Copy example</button></div><pre><code id="code-recovery">persist(plan)
+tag_source_snapshot()
+require_recovery_within_seven_days_or_suspend_cleanup()
+admit(workers, required_capabilities)
+execute_each_task_with_fresh_attempt_identity()
+select_one_result_per_task_with_fencing()
+validate(source, fields, models, intended_coverage)
+persist(publication_intent)
+publish_through_authoritative_lance_handler()
+
+if outcome_is_ambiguous:
+    reconcile_authoritative_state_before_retry()
+
+record_committed_version_and_terminal_outcome()
+release_retention_after_workers_are_quiescent()</code></pre><p class="small">An external ledger and a Lance commit are not automatically atomic. Index publication can reconcile segment identities; append should first evaluate persisted Transaction.uuid and read_transaction, including retry and lost-acknowledgement tests.</p></div>
+<p id="copy-status" class="small muted" aria-live="polite"></p>
+</section>
+
+<section id="reading">
+<div class="section-head"><div><div class="eyebrow"><span class="section-number">09</span>Your first contribution</div><h2>Find the invariant. Choose its owner.</h2></div><a class="doc-link" href="README.md">Documentation index ↗</a></div>
+<p class="callout">A new backend should add an implementation and conformance cases. A new scheduler should reuse storage semantics. A release upgrade should reveal a bounded adapter change.</p>
+<div class="two-col"><div><h3>Working vocabulary</h3><details><summary>Snapshot / manifest version</summary><p>An immutable dataset view. Its number is meaningful only with the table, incarnation and branch; retaining a version requires an actual cleanup/retention policy.</p></details><details><summary>Fragment vs physical index segment</summary><p>A fragment identifies dataset data. An index segment is a physical search artifact covering fragments; several segments can implement one logical index name.</p></details><details><summary>Attempt vs operation</summary><p>An operation is durable logical intent. A task can run several attempts; each attempt needs distinct output identity, and only selected outputs can be published.</p></details><details><summary>Direct commit vs physical merge</summary><p>Direct commit can retain separate models in separate segments. Physical merge combines storage and requires stricter model/layout compatibility.</p></details><details><summary>Stable format vs plugin interface</summary><p>Stable persistent bytes are a compatibility contract. A Rust extension interface can still require source updates and recompilation; the scalar registry currently documents that requirement.</p></details></div><div><h3>Contributor starting sequence</h3><ol style="padding-left:22px;font-size:14px"><li>Read the current-state audit and exact evidence pins.</li><li>Reproduce the gap on the selected release combination.</li><li>Locate the owning module in <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>.</li><li>Refresh related issues and inspect overlapping PRs.</li><li>Propose the smallest contract change with a concrete consumer.</li><li>Add tests at the invariant owner, then connector conformance.</li><li>Record format effects, fallback behavior and upgrade impact.</li></ol><p class="small muted">Follow repository and language guides. Keep local unit fixtures small, use historical stable fixtures for compatibility, and require recall assertions for vector behavior.</p></div></div>
+<h3 style="margin-top:34px">The documentation behind this guide</h3><div class="source-grid"><a href="docs/06-distributed-current-state.md">06 / Current source and extension audit</a><a href="docs/07-ecosystem-evidence.md">07 / Public ecosystem and issue evidence</a><a href="docs/08-extensible-target-architecture.md">08 / Target architecture and contracts</a><a href="docs/09-sql-and-ray-integration.md">09 / PostgreSQL-family and Ray design</a><a href="docs/10-npu-acceleration.md">10 / Optional NPU backend and qualification</a><a href="docs/11-upstream-and-upgrade-strategy.md">11 / Shared value and upgrade strategy</a><a href="docs/12-validation-and-experiments.md">12 / Experiments and failure matrix</a><a href="docs/13-examples-and-contracts.md">13 / Examples and proposed records</a><a href="docs/00-overview.md">00–05 / Existing vector architecture guides</a><a href="distributed-extensibility-plan.md">Plan / Milestones, backlog, dependencies and owners</a></div>
+<div class="note teal" style="margin-top:30px"><strong>The first ten working days:</strong> confirm scope and hardware; reproduce Ray and SQL baselines; measure profiles and upgrade cost; run a failure/retry exercise and an NPU pipeline probe; then review the first bounded RFCs.</div>
+</section>
+<footer class="footer"><strong>Lance distributed architecture field guide.</strong> Prepared 2026-11-13 from source inspection and public primary sources. No private LanceDB internals were inspected. SQL-engine selection and performance qualification remain phase-0 decisions.<br><br><a href="docs/07-ecosystem-evidence.md">Sources and reproducible pins</a> · <a href="distributed-extensibility-plan.md">Full proposed plan</a> · <button class="no-print" id="print-guide" type="button">Print / save as PDF</button></footer>
+</main>
+<script>
+'use strict';
+const q = (selector, root = document) => root.querySelector(selector);
+const qa = (selector, root = document) => [...root.querySelectorAll(selector)];
+const owners = {
+ sql: ['SQL engine: decide what the query means.', 'Keep joins, SQL types, collations and transaction semantics in the engine. The adapter maps a supported scan/search request and keeps unsupported predicates local.'],
+ ray: ['Ray coordinator: decide where work runs.', 'Schedule admitted tasks and resource budgets. Persist plan and attempt state outside ephemeral actor memory, enforce fencing and reconcile publication through Lance.'],
+ core: ['Lance core: enforce the data invariants.', 'Preserve snapshot visibility, deletion and overlay semantics, row identity, index provenance and manifest correctness. Core rules are reused by every engine and scheduler.'],
+ device: ['Compute backend: execute a bounded operation.', 'Accept declared shapes, types, metric and precision; return validated results. Keep SQL sessions, Ray actors and manifest publication out of device kernels.']
+};
+qa('[data-owner]').forEach(button => button.addEventListener('click', () => {
+ const owner = button.dataset.owner;
+ qa('[data-owner]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+ q('#owner-title').textContent = owners[owner][0]; q('#owner-text').textContent = owners[owner][1];
+ qa('[data-node]').forEach(node => {node.classList.toggle('dim', node.dataset.node !== owner);node.classList.toggle('selected', node.dataset.node === owner);});
+}));
+qa('[data-filter]').forEach(button => button.addEventListener('click', () => {
+ qa('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+ let visible = 0;
+ qa('#capabilities tbody tr').forEach(row => {row.hidden = button.dataset.filter !== 'all' && row.dataset.maturity !== button.dataset.filter; if (!row.hidden) visible++;});
+ q('#cap-count').textContent = `${visible} capabilities`;
+}));
+const stages = [
+ ['PLANNED','Pin the source and persist the plan.','Bind table identity, incarnation, branch, manifest version, schema, fields and model parameters. Tag the source snapshot. Finish build plus recovery within the fixed seven-day artifact grace period with delete_unverified=false, or suspend cleanup for the job.'],
+ ['RUNNING','Admit and dispatch bounded tasks.','Workers must meet required capabilities. Send native plan descriptors and budgets, with scoped access provisioned separately. Do not serialize credentials or the entire dataset.'],
+ ['RUNNING','Write an immutable artifact per attempt.','Each attempt uses a fresh output identity. Return small metadata descriptors; a crash can leave complete or partial unreferenced objects.'],
+ ['VALIDATED','Select attempts and verify the whole job.','Choose one result per task using enforced fencing. Validate intended coverage, source identity, fields, parameters and model digests in addition to Lance’s own checks.'],
+ ['COMMITTING','Persist intent, then publish through Lance.','Use the table’s authoritative commit path and honor concurrency validation. Independent segments and physical merge have different model requirements.'],
+ ['RECONCILING / COMMITTED','Resolve the outcome before retrying.','A timeout does not prove failure. Read authoritative publication state, record the committed version and release retention only when workers and recovery are finished.']
+];
+let stage = 0;
+function setStage(index) {
+ stage = Math.max(0, Math.min(stages.length - 1, index));
+ q('#step-state').textContent = stages[stage][0]; q('#step-title').textContent = stages[stage][1]; q('#step-text').textContent = stages[stage][2];
+ qa('[data-step]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.step) === stage)));
+ qa('[data-seq]').forEach(g => g.classList.toggle('current', Number(g.dataset.seq) === stage));
+ q('#prev-step').disabled = stage === 0; q('#next-step').disabled = stage === stages.length - 1;
+}
+qa('[data-step]').forEach(b => b.addEventListener('click', () => setStage(Number(b.dataset.step))));
+q('#prev-step').addEventListener('click', () => setStage(stage - 1)); q('#next-step').addEventListener('click', () => setStage(stage + 1));
+const failures = {
+ worker: [2,'Retry with a fresh artifact identity and select one successful attempt. A failed task may still have written data. Recover before its files reach seven days with delete_unverified=false, or keep cleanup suspended; a job record alone does not protect those files.'],
+ duplicate: [3,'Select one successful descriptor per task. Never publish both retries for the same intended coverage. A shared artifact UUID is not a safe deduplication mechanism.'],
+ commit: [5,'Reconcile against authoritative committed versions before retrying. If publication landed, record success. For append, first evaluate the persisted Transaction.uuid with read_transaction across candidate versions; internal retries preserve it, but this alone does not prove client resubmission is idempotent.'],
+ source: [3,'Recheck the job’s source and coverage policy. Publish only a validated compatible result, report explicitly allowed reduced coverage, or replan. Do not silently claim the original exact coverage.'],
+ gc: [0,'Tags protect source snapshots, but default cleanup deletes unreferenced index files after seven days even during active jobs. This fixed grace period is independent of older_than; delete_unverified=true removes it. Finish build plus recovery within seven days with the flag false, or suspend cleanup. Longer jobs alongside cleanup need a core retention change.'],
+ fence: [4,'Reject stale coordinator record mutations and publication attempts. Fencing must be enforced at both relevant boundaries; writing an epoch into a task is insufficient.']
+};
+q('#failure-mode').addEventListener('change', event => {const entry = failures[event.target.value];q('#failure-text').textContent = entry[1];setStage(entry[0]);});
+function updateCalculator() {
+ const transfer = Number(q('#transfer-ms').value), total = 43 + transfer, speed = 110 / total;
+ q('#transfer-value').textContent = `${transfer} ms`; q('#npu-total').textContent = `${total} ms`; q('#speedup').textContent = `${speed.toFixed(2)}×`;
+ q('#cpu-bar').style.width = `${110 / 193 * 100}%`; q('#npu-bar').style.width = `${total / 193 * 100}%`;
+ q('#calc-result').textContent = total < 110 ? 'The illustrative NPU path is faster. Transfer costs are included; overlap and queuing are omitted.' : total === 110 ? 'The paths break even at 67 ms of conversion and transfer. The kernel alone is still 10× faster.' : 'The illustrative NPU path is slower end to end, despite a 10× faster kernel. Transfers dominate the benefit.';
+}
+q('#transfer-ms').addEventListener('input', updateCalculator);
+function wireTabs(attribute, panelPrefix) {
+ const buttons = qa(`[${attribute}]`);
+ function select(button, focus = false) {
+  buttons.forEach(b => {const selected = b === button;b.setAttribute('aria-selected', String(selected));b.tabIndex = selected ? 0 : -1;q(`#${panelPrefix}${b.getAttribute(attribute)}`).hidden = !selected;});
+  if (focus) button.focus();
+ }
+ buttons.forEach((button, index) => {
+  button.addEventListener('click', () => select(button));
+  button.addEventListener('keydown', event => {
+   let next;
+   if(event.key === 'ArrowRight') next = (index + 1) % buttons.length;
+   if(event.key === 'ArrowLeft') next = (index - 1 + buttons.length) % buttons.length;
+   if(event.key === 'Home') next = 0;
+   if(event.key === 'End') next = buttons.length - 1;
+   if(next !== undefined){event.preventDefault();select(buttons[next], true);}
+  });
+ });
+}
+wireTabs('data-phase','phase-'); wireTabs('data-example','example-');
+qa('[data-copy]').forEach(button => button.addEventListener('click', async () => {
+ const code = q(`#${button.dataset.copy}`);
+ try {
+  if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+  await navigator.clipboard.writeText(code.textContent); q('#copy-status').textContent = 'Example copied.';
+ } catch {
+  const selection = window.getSelection(), range = document.createRange();range.selectNodeContents(code);selection.removeAllRanges();selection.addRange(range);
+  q('#copy-status').textContent = 'Example selected. Use your browser’s Copy command.';
+ }
+}));
+q('#print-guide').addEventListener('click', () => window.print());
+const links = qa('nav a');
+if ('IntersectionObserver' in window) {
+ const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {if(entry.isIntersecting) links.forEach(a => {const active = a.getAttribute('href') === `#${entry.target.id}`;a.classList.toggle('active',active);if(active) a.setAttribute('aria-current','location');else a.removeAttribute('aria-current');});});
+ }, {rootMargin:'-5% 0px -70% 0px',threshold:0});qa('main section').forEach(s => observer.observe(s));
+}
+function updateProgress(){const range = document.documentElement.scrollHeight - window.innerHeight;q('#reading-progress').style.width = `${range > 0 ? Math.min(100, Math.max(0, window.scrollY / range * 100)) : 0}%`;}
+window.addEventListener('scroll', updateProgress,{passive:true});window.addEventListener('resize', updateProgress);updateProgress();updateCalculator();
+</script>
+</body>
+</html>
