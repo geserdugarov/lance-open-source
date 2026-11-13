@@ -294,5 +294,7 @@ for the API boundaries.
 6. Read `05-distributed-vector-index-creation.md` before integrating vector
    index builds with an external scheduler or designing delta consolidation.
 
-All six vector guides are cross-referenced and can be read in isolation, but
-the order above minimizes backtracking.
+These six vector guides form the foundation of the fourteen-document set
+(00–13). Continue with [06](06-distributed-current-state.md) for the distributed
+architecture audit and chapters 07–13 for the integration designs and contracts.
+The order above minimizes backtracking.

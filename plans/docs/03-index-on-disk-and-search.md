@@ -704,7 +704,8 @@ If latency is high:
 
 ---
 
-This concludes the storage-and-search core of the six vector-focused guides:
+This concludes the storage-and-search core of the fourteen-document set
+(00–13). The six vector-focused guides are:
 
 1. **`00-overview.md`** — dataset layout + crate layering + lifecycle
 2. **`01-vector-storage.md`** — how embedding columns are encoded
@@ -712,3 +713,6 @@ This concludes the storage-and-search core of the six vector-focused guides:
 4. **`03-index-on-disk-and-search.md`** *(this file)* — storage, query, ops
 5. **`04-lance-versions.md`** — library releases versus file-format versions
 6. **`05-distributed-vector-index-creation.md`** — distributed build protocol
+
+Chapters 06–13 cover distributed architecture and integration proposals,
+starting with [the current-state audit](06-distributed-current-state.md).
