@@ -2,7 +2,7 @@
 
 Status: **proposed technical contribution workflow**, 2026-11-13. It does not represent a commitment from project maintainers.
 
-The implementation audit is refreshed to `67faafe65` (2026-11-16); the latest
+The implementation audit is refreshed to `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24); the latest
 stable tag in this checkout is `v14.0.3`. Connector observations remain pinned
 as recorded in [07](07-ecosystem-evidence.md). Reconciled on 2026-11-24 with
 the upstream crate-architecture proposal
@@ -83,12 +83,17 @@ from the first PR that implements it.
 
 A stable file format does not make the Rust ABI stable. Conversely, a library API change need not change the file format. Tracking these contracts separately is essential to reducing upgrade work. Repository policy is defined in [AGENTS.md](../../AGENTS.md), with release context in [04](04-lance-versions.md).
 
-Track specification, runtime and binding availability independently. Transaction
-V2's schema is present while runtime execution is unsupported; bounded
-consolidation is available across bindings while UUID-selected consolidation
-is Rust-only. Independent covering fields and scalar row-address layouts also
-require capability-aware metadata handling. A successful recompile or generated
-protobuf type is insufficient evidence for an admitted operation.
+Track specification, runtime and binding availability independently.
+`lance_protos::proto_dir()` lets downstream build scripts import schemas
+from the same revision as Lance. Rust also supports opt-in Transaction V2
+commits, while Python and Java expose named operations. Conversely, a
+nonempty `local_fragment_aliases` map is representable in the protobuf and
+rejected by the current reader. Pin the schema and exercise the operation
+through each supported binding. [Schema package](../../protos/src/lib.rs) · [Index metadata reader](../../rust/lance-table/src/format/index.rs)
+
+Bounded consolidation is available across bindings. UUID-selected
+consolidation is Rust-only. Independent covering fields and scalar
+row-address layouts also require capability-aware metadata handling.
 
 ## Release and CI lanes
 

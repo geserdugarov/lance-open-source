@@ -2,7 +2,7 @@
 
 Status: **proposed gates**, 2026-11-13. No measurements in this document are results. Thresholds are starting criteria to confirm with workload owners during phase 0.
 
-Use `67faafe65` (2026-11-16, `15.0.0-beta.22`) for the development reference;
+Use `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24, `15.0.0-beta.29`) for the development reference;
 `v14.0.3` is the latest local stable tag. Keep external connector pins separate
 and do not treat this source refresh as a completed integration run. E9 and
 the refactor-invariance row were added on 2026-11-24 for the upstream
@@ -37,22 +37,26 @@ Report distributed efficiency as `throughput(W) / (W * throughput(1))` at the sa
 | --- | --- |
 | Dataset visibility | Multiple fragments, deleted rows, sparse overlays, stable row IDs and physical-address remapping; no stale or resurrected rows |
 | Index ownership | Disjoint assignment, uncovered fragments plus stale overlay rows inside covered fragments, multiple segments per logical index, duplicate attempts and partial replacement; every fallback row must have one task owner |
-| Vector quality | Exact ground truth at the same snapshot; L2/cosine/dot as supported; null rows/elements, empty inputs, zero vectors, NaNs and wrong dimensions according to the selected API contract |
+| Vector quality | Use exact top-k at the same snapshot for L2, cosine and Dot. Compare single-process, distributed and accelerated Dot IVF-PQ with refinement disabled. Include null rows and elements, sliced multivectors, empty inputs, zero vectors, NaNs and invalid dimensions. |
 | ANN global merge | Compare identities/distances with single-node Lance at the same snapshot and options; cover mixed indexed/fallback L2/Dot scores, implicit exact rescore, code-only RQ, oversampling, different models, filters and ties; also assert recall against exact ground truth |
 | Physical merge | Identical versus incompatible model artifacts, unsupported layout composition, source changes; rejection must occur before publication |
 | Consolidation | Carry the same plan/options to commit in each binding; reject partial surviving selected coverage; distinguish bounded suffix model reuse from Rust selected-segment retraining |
-| Current query modes | Adaptive shared scans versus per-query fallback, cross-column coarse/final vector spaces, WARP versus XTR eligibility, and HNSW-RQ versus flat-RQ refinement; qualify connector support explicitly |
+| Current query modes | Compare both IVF_HNSW_RQ graph-scoring modes to core, including propagation to every worker. Cover flat-RQ code-only refinement, adaptive shared scans, cross-column refinement and WARP/XTR eligibility. |
 | Metadata / cache identity | Independent covering fields, persisted scalar result domains, every merged build contribution, snapshot changes and table recreation; no reuse of stale listings/rankings |
-| Compaction / update races | Index build versus deletion/update/compaction; source version cleanup; preserved row identity or explicit conflict/replan |
+| Compaction / update races | Race index builds against deletes, updates, rewrites and source-version cleanup. Check IVF_HNSW recall after deferred compaction on cold load and prewarm. Check row identity and index coverage after repacking, and recover from a failed repack following a published rewrite. |
 | SQL | Projection of residual-filter columns, null three-valued logic, overflow, decimals, timezone/collation, parameterized rescans, cancellation and transaction lifecycle |
 | Resource bounds | Large uncovered-fragment fallback, skewed partitions, bounded in-flight batches, driver candidate/metadata growth, spill and cancellation |
 | Devices | CPU-only installation, missing accelerator, unsupported operation, OOM, failure during async copy, precision drift, deterministic seed where supported |
 | Protocol | Unknown required capability, stale coordinator epoch, wrong plan/model/schema digest, truncated descriptor and mismatched worker version |
 | Refactor invariance | Same visibility, coverage, fallback and scoring results before and after an upstream crate move; public paths still resolve through re-exports; no persisted-format change |
 
-Transaction V2 checks at this baseline assert rejection of `CompositeOperation`,
-not successful execution. Wire transport tests must retain explicit empty
-fragment selections and required list-structure/visibility projection state.
+Exercise a Rust composite commit with and without the experimental opt-in.
+Verify one manifest publication for valid actions and rejection of unknown
+actions. Incompatible vector segments must fail before the new manifest is
+published. Cover disjoint and conflicting action footprints and
+conflicts with named operations. Wire transport tests must retain explicit
+empty fragment selections and required list-structure/visibility projections.
+[Composite transaction tests](../../rust/lance/src/dataset/tests/dataset_transactions.rs)
 
 All new bugs/features require regression tests in the owning existing suites. Use `rstest` or parametrized pytest for input variations, descriptive cases, and small unit fixtures (normally under one second each). Large cluster/device experiments belong in integration/performance suites; do not weaken correctness/recall assertions to shorten tests.
 

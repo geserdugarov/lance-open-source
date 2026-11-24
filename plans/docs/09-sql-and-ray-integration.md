@@ -2,7 +2,7 @@
 
 Status: proposed implementation path, informed by existing public integrations. Date: 2026-11-13. **Working assumption:** PostgreSQL is the reference engine; openGauss or another PostgreSQL-family engine receives a separate compatibility assessment. SQL compatibility is not extension ABI compatibility.
 
-Lance API references are checked against `67faafe65` (2026-11-16). External
+Lance API references are checked against `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24). External
 connector claims retain the exact revisions in [07](07-ecosystem-evidence.md).
 Reconciled on 2026-11-24 with the upstream crate-architecture proposal
 ([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)), which
@@ -47,6 +47,10 @@ The PostgreSQL FDW interface exposes scan, planning and optional parallel/async 
 For a first milestone, resolve and pin a Lance version at statement start and reuse it for every scan task, rescan and join reference to that foreign table. Describe this as **statement-scoped external snapshot consistency**. PostgreSQL `REPEATABLE READ` must not be advertised as covering an external table until the adapter retains a per-transaction snapshot binding, protects retention and handles rescans and prepared statements accordingly.
 
 Two different Lance tables can be independently pinned yet lack a common transaction snapshot. Multi-table atomicity and point-in-time consistency need an additional catalog/transaction protocol. Do not infer them from version numbers.
+
+The Rust Transaction V2 opt-in can atomically apply several actions to one
+Lance manifest. PostgreSQL transaction state and an external CDC offset
+still have their own publication and recovery protocols. [Commit API](../../rust/lance/src/dataset/write/commit.rs)
 
 ### Type and expression contract
 
@@ -153,6 +157,11 @@ implements and tests those rules, use the complete core scanner for those
 requests. Adaptive shared batch search also has narrower eligibility than
 fixed-probe shared search; follow the core planner's checks.
 
+For IVF_HNSW_RQ, send the same `rq_graph_scoring` to each segment task.
+The default full-code walk and the optional one-bit walk can visit different
+nodes. A driver rerank cannot recover a candidate the worker never visited.
+Check the worker's support before dispatch. [ANN execution schema](../../protos/ann.proto)
+
 Use bounded candidate aggregation: with `W` workers, local candidate limit `K'`, and candidate row width `B`, result payload is approximately `W * K' * B`, before framing and buffers. The current public Lance-Ray returns a materialized top-k table; keep wide payload columns out of candidate exchange and fetch them after selection where supported. Do not imply it is a general streaming distributed SQL engine.
 
 FTS needs a separate ranking design: combining local BM25 scores without consistent corpus statistics can change ranking. The proposed `as_ranked()` capability covers BM25 as well as ANN, but a per-segment ranked stream does not by itself supply those statistics. Hybrid search, global aggregation and distributed joins are distinct capabilities, not consequences of vector fanout.
@@ -165,6 +174,10 @@ Use core build-memory events and execution reservation peaks alongside worker
 RSS and device measurements. Runtime session cache resizing controls cache
 budgets, not total worker memory; neither telemetry nor a Ray CPU request
 enforces a global Lance allocation limit.
+
+For compaction tasks that re-encode data, Python's `data_cache_bytes` and
+Java's `withDataCacheBytes` set the column-buffer budget per output writer.
+Account separately for input scans and concurrent writers on the same worker.
 
 Define deadlines, retryability, partial-result policy, admission limits and metrics. Query failure should default to an explicit failure, not silently return a partial top-k. If a product needs partial results, make incompleteness visible in a separate API contract.
 

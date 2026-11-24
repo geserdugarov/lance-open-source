@@ -1,8 +1,8 @@
 # Distributed Vector Index Creation
 
-> **Code snapshot:** 2026-11-16
+> **Code snapshot:** 2026-11-24
 >
-> **Source baseline:** `main` at `67faafe65`, workspace `15.0.0-beta.22`.
+> **Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9`, workspace `15.0.0-beta.29`.
 > This includes development APIs that are not in the latest stable `v14.0.3` tag.
 >
 > **Scope:** current architecture, public APIs, operational invariants, known
@@ -124,6 +124,9 @@ Concurrent dataset activity needs an explicit policy:
   stale. Commit compares historical and current indexed-field file paths and
   prunes retired or rewritten coverage, but an exact-coverage workflow should
   normally abort and rebuild instead of accepting that fallback;
+- a column repack preserves an already committed index, but can change the
+  file paths seen by a staged segment. Check the effective coverage after
+  publishing an index built across a repack;
 - an in-place vector overlay can keep the fragment ID stable while changing
   indexed values. Because the segment retains its source `dataset_version`,
   queries mask newer overlay rows from ANN and re-score their current values.
@@ -188,6 +191,12 @@ process; they do not distribute Lloyd rounds across external workers. Rust's
 without scanning a dataset. The scheduler-neutral distributed centroid training
 proposal [#7321](https://github.com/lance-format/lance/pull/7321) closed unmerged
 on 2026-11-09. Its design is useful history, not an active or shipped API.
+
+For Dot IVF-PQ, `prepare_global_ivf_pq` trains the codebook on raw vectors
+and shared-model workers assign sub-vectors to their nearest L2 codeword.
+The segment still records Dot for search. For L2 and cosine the codebook
+is trained on IVF residuals. Compare distributed and single-process recall
+with refinement disabled to check the codes themselves. [Dot recall regression](../../python/python/tests/test_vector_index.py)
 
 Java has an important exception at this snapshot. `VectorTrainer.trainPqCodebook`
 calls the native PQ trainer without the IVF model. For L2 and Cosine, however,
@@ -673,6 +682,13 @@ The current segment APIs enforce the following layers.
   and retained segments; vector builds have one keyed field and no carried fields;
 - the segment files can be listed concurrently and recorded in the manifest.
 
+The experimental Rust `AddIndexSegment` action also checks the vector
+contracts of coexisting segments against the final proposed manifest on
+both regular and detached commits. A complete replacement can change the
+contract. Local fragment aliases still have only a wire definition, so a
+worker cannot publish an index over provisional IDs by supplying a nonempty
+alias map. [Vector compatibility checks](../../rust/lance/src/index/vector/ivf/compatibility.rs) · [Metadata decoder](../../rust/lance-table/src/format/index.rs)
+
 `IndexSegment` carries UUID, coverage, `fields`, `covering_fields`, index details,
 index version, and `dataset_version`. Rust conversion from `IndexMetadata` and the
 Python/Java conversions from returned `Index` objects preserve all of that
@@ -839,7 +855,10 @@ size, and HNSW construction. `shuffle_partition_batches` and
 builder and distributed path do not use them as memory controls.
 Streaming IVF controls bound training chunks/coresets,
 and `LANCE_SHUFFLE_MAX_PRELOADED_OFFSETS_BYTES` bounds shuffle offset
-preloading. Neither is a memory limit for the entire build. The broader
+preloading. For a fixed-size-list source, `LANCE_IVF_TRAINING_SAMPLE_BLOCK_ROWS`
+can reduce reads during process-local IVF training by sampling contiguous
+runs. The default is one row, and quantizer training uses independent rows.
+Record the setting when comparing recall on clustered data. The broader
 memory-pool effort is tracked by
 [#7301](https://github.com/lance-format/lance/issues/7301), vector-specific
 [#7305](https://github.com/lance-format/lance/issues/7305). Draft
@@ -967,7 +986,7 @@ The Python and Java bindings expose those same Rust stages (#10328, #10332):
 Python `options` is a dictionary containing `index_names`, `retrain`,
 `num_indices_to_merge`, `max_rows_per_task`, `max_rows_per_segment`, or the
 separate `max_rows_to_consolidate` mode. Not all combinations are valid.
-For example:
+Unknown option names raise an error.
 
 ```python
 from lance.optimize import OptimizeIndices
@@ -1017,8 +1036,12 @@ against a reference segment's model. A retrain, definition-only index, or
 fully dormant index may train a model during planning and write a temporary
 model segment outside the manifest. Account for that work and its cleanup.
 
-Vector, BTree, Bitmap, NGram, RTree, LabelList, and Inverted indices have merge primitives for
-this planning framework. Kinds without such a primitive, and Inverted indices
+Vector, BTree, Bitmap, NGram, RTree, LabelList, Inverted, BloomFilter and
+MinHash LSH indices have merge primitives for bounded optimization.
+BloomFilter splits when its selected segments can reuse zones and recorded
+null rows with compatible build parameters and coverage. Otherwise it stays
+in one task. MinHash LSH can reuse stored signatures alongside signatures
+from new rows. Kinds without a merge primitive, and Inverted indices
 on stable-row-ID tables, stay in one task even when bounds are supplied.
 Scalar cohorts that mix a historical row-ID domain with the domain current
 writers emit also stay unsplit for a whole-cohort rebuild. LabelList leaves
@@ -1141,10 +1164,11 @@ A production distributed build should verify:
 
 | Coverage | Location |
 |---|---|
-| Python distributed vector variants, direct commit, physical merge, recall, shared model artifacts, layout windows | `python/python/tests/test_vector_index.py` |
+| Python distributed vector variants, direct commit, physical merge, Dot IVF-PQ recall with a shared codebook, layout windows | `python/python/tests/test_vector_index.py` |
 | Rust segment validation, replacement semantics, logical multi-segment query, vector merge variants, HNSW rebuild, progress | `rust/lance/src/index/tests/`, `rust/lance/src/index/vector.rs`, `rust/lance/src/index/vector/ivf.rs` |
 | Merge-kernel format and compatibility tests | `rust/lance-index/src/vector/distributed/index_merger.rs` |
 | Rust optimization plans, task grouping, serializable records, partial commit, and vector retrain | `rust/lance/src/index/optimize.rs` |
+| IVF optimization and HNSW remap across deferred compaction | `rust/lance/src/index/vector/ivf/tests/optimize.rs`, `rust/lance/src/dataset/optimize/tests/vector.rs` |
 | Rust bounded consolidation and commit validation | `rust/lance/src/index/optimize/consolidate/tests.rs` |
 | Python index optimization stages and serialization | `python/python/tests/test_optimize.py` |
 | Java optimization stages and serialization | `java/src/test/java/org/lance/index/optimize/OptimizeIndicesTest.java` |
@@ -1159,7 +1183,7 @@ cost. Record those separately in an end-to-end environment.
 
 ## 11. Current limitations and sharp edges
 
-| Area | Current state at `67faafe65` | Operational response |
+| Area | Current state at `v15.0.0-beta.29` | Operational response |
 |---|---|---|
 | Scheduler | Lance has no end-to-end distributed scheduler | Integrate the segment protocol into an external engine and persist a job manifest. |
 | Direct-commit compatibility | Commit checks details type URL and coexisting vector metric, dimension, sub-index type, and quantizer type | Enforce remaining tuning, model contents, job identity, and intended coverage at the external barrier. |
@@ -1188,7 +1212,7 @@ Issue and PR states below were checked through the GitHub API on
 Discussion #8973 and the crate-architecture proposal were read on
 **2026-11-24**.
 Landed capabilities were refreshed from local history and source at
-`67faafe65` on **2026-11-16**. External issue states retain the dates above; an open
+`v15.0.0-beta.29` on **2026-11-24**. External issue states retain the dates above; an open
 proposal is not part of this snapshot's API. Re-check states before using this document
 as a release plan.
 
@@ -1279,6 +1303,9 @@ is implemented by #10522 in this baseline; the Java PQ-training gap remains.
 | [#10755](https://github.com/lance-format/lance/pull/10755), [#10762](https://github.com/lance-format/lance/pull/10762) | Exposes bounded consolidation in Java/Python and passes planning options through commit. |
 | [#10698](https://github.com/lance-format/lance/pull/10698) | Adds Rust UUID-selected consolidation, with training when selected models differ. |
 | [#10981](https://github.com/lance-format/lance/pull/10981), [#10954](https://github.com/lance-format/lance/pull/10954) | Extends bounded distributed optimization to RTree and LabelList. |
+| [#10977](https://github.com/lance-format/lance/pull/10977), [#10884](https://github.com/lance-format/lance/pull/10884) | Adds bounded optimization for eligible BloomFilter and MinHash LSH segments. |
+| [#11218](https://github.com/lance-format/lance/pull/11218), [#11199](https://github.com/lance-format/lance/pull/11199) | Aligns distributed and Torch Dot IVF-PQ builds with single-process CPU training and encoding. |
+| [#11213](https://github.com/lance-format/lance/pull/11213) | Validates coexisting vector segments added through Transaction V2 actions. |
 
 ### 12.3 Follow-ups to match with current trackers
 
@@ -1350,6 +1377,7 @@ this document.
 | Worker dispatch and `execute_uncommitted` | `rust/lance/src/index/create.rs` |
 | Public segment traits/types | `rust/lance/src/index/api.rs` |
 | Merge/commit validation and replacement rules | `rust/lance/src/index/lifecycle.rs`, `rust/lance/src/index/provenance.rs` |
+| File-based contract checks for vector segments | `rust/lance/src/index/vector/ivf/compatibility.rs` |
 | Distributed vector worker build and parameter stages | `rust/lance/src/index/vector.rs` |
 | Shared build pipeline and progress stages | `rust/lance/src/index/vector/builder.rs` |
 | Physical vector segment merge, root write, HNSW rebuild | `rust/lance/src/index/vector/ivf.rs` |
@@ -1374,7 +1402,7 @@ this document.
 | User-facing guide | `docs/src/guide/distributed_indexing.md` |
 | On-disk/query background | `docs/src/format/index/index.md`, `plans/docs/03-index-on-disk-and-search.md` |
 
-These are `67faafe65` paths. The upstream crate-architecture proposal would
+These are `v15.0.0-beta.29` paths. The upstream crate-architecture proposal would
 relocate index lifecycle and implementation code into new crates while
 re-exporting the public APIs from `lance`; re-check locations after any such
 move.

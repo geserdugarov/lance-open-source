@@ -2,7 +2,7 @@
 
 Research date: **2026-11-13**. This is a source review, not a deployment certification or performance benchmark. “Released” below means a published non-prerelease artifact was identified; it does not imply production maturity. “Main” means inspected development source. Recommendations are explicitly marked as proposals.
 
-Local Lance references were refreshed to `67faafe65` on **2026-11-16**.
+Local Lance references were refreshed to `v15.0.0-beta.29` on **2026-11-24**.
 External artifacts and issue observations remain pinned to the dates below;
 this refresh does not claim a new external release or connector qualification.
 The upstream crate-architecture proposal and discussion #8973 were read on
@@ -15,7 +15,7 @@ The central finding is that distributed Lance is already more than a future idea
 
 | Component | Observed baseline | Interpretation |
 | --- | --- | --- |
-| This checkout's implementation | `67faafe651d3bbec9ee537d7313890328e9e7fa3`, 2026-11-16 | Requested `main` baseline; later planning and skill commits are outside the implementation baseline. Package version `15.0.0-beta.22` is development provenance. |
+| This checkout's implementation | `ded121cd9a99dc83040cf41049dc2bd3963241b9`, 2026-11-24 | Requested `main` baseline; later planning and skill commits are outside the implementation baseline. Package version `15.0.0-beta.29` is development provenance. |
 | Public Lance stable observed on 2026-11-13 | [v14.0.2](https://github.com/lance-format/lance/releases/tag/v14.0.2), published 2026-10-29 | Historical GitHub release observation; not a claim that this is still the latest stable release. |
 | Latest stable tag in the refreshed checkout | `v14.0.3`, release commit `c7dc014f1`, 2026-11-15 | Verified from local tags/history; patch contents are described in [04](04-lance-versions.md). No binaries were qualified by this refresh. |
 | Public Lance main observed on 2026-11-13 | [e13a2ee341b0e14d715c8baac15cded1a8034b7f](https://github.com/lance-format/lance/commit/e13a2ee341b0e14d715c8baac15cded1a8034b7f), 2026-11-13 | Historical research pin, included in the refreshed implementation baseline. |
@@ -24,7 +24,7 @@ The central finding is that distributed Lance is already more than a future idea
 | pglance | [6dece2f725624f3496816135d08b9b4eec63b219](https://github.com/lance-format/pglance/commit/6dece2f725624f3496816135d08b9b4eec63b219), 2025-12-27 | GitHub latest-release endpoint returned 404. [Manifest](https://github.com/lance-format/pglance/blob/6dece2f725624f3496816135d08b9b4eec63b219/Cargo.toml) says package `0.0.0`, Lance `1.0`, Arrow `56.2`, and pgrx `=0.14.3`; default PG feature is `pg16`. |
 | Lance-Spark | [75546d97b0c259e88ff3be4d47e9e93970801420](https://github.com/lance-format/lance-spark/commit/75546d97b0c259e88ff3be4d47e9e93970801420), 2026-11-11 | Development reference for an independent distributed engine adapter; no release compatibility is inferred. |
 | Lance Namespace | [a13c746bdf369b62d4fc583357564f0cddfad667](https://github.com/lance-format/lance-namespace/commit/a13c746bdf369b62d4fc583357564f0cddfad667), 2026-10-23 | Specification/SDK reference. Individual server implementations can support different subsets. |
-| Upstream crate-architecture proposal | [Proposal: Refactoring Lance's crate architecture](https://docs.google.com/document/d/1sqkh0bmDxZRbjGkAsb_ephag9JErtAlpcru7RTGOv_E/edit), dated 2026-11-16, by the maintainer who opened #8973; read 2026-11-24 | Direction document for contributors. Its measurements cite `main` at `d829354`, which is absent from this checkout; nothing it proposes exists at `67faafe65`. |
+| Upstream crate-architecture proposal | [Proposal: Refactoring Lance's crate architecture](https://docs.google.com/document/d/1sqkh0bmDxZRbjGkAsb_ephag9JErtAlpcru7RTGOv_E/edit), dated 2026-11-16, by the maintainer who opened #8973; read 2026-11-24 | Its measurement revision `d8293547c` is an ancestor of `v15.0.0-beta.29`. The proposed crate split is still pending. |
 | Lance scope discussion | [#8973, "What should be in scope for Lance?"](https://github.com/lance-format/lance/discussions/8973), opened 2026-09-03 in the Ideas category; read 2026-11-24 | Requirements source for the proposal. The opening post states that nothing is being removed and no decision has been made. |
 
 ## What can be reused
@@ -100,18 +100,17 @@ not organizational commitments.
 
 ## Upstream crate-architecture proposal
 
-Read **2026-11-24**. Classification: **Proposed** by a Lance maintainer. No
-crate, trait or task type named in this section exists at `67faafe65`. The
+Read **2026-11-24**. The index API crate, extracted WAL and engine-neutral
+task layer are **proposed** at `v15.0.0-beta.29`. The
 document describes how the code is organized, not what belongs in Lance's
 scope, and says it should fit any outcome of #8973. It leaves the public API of
 the `lance` crate and the `pylance` package unchanged: code moves into new
 crates and `lance` re-exports it.
 
-The stated motivation is build and test cost. `lance` holds about 615k of the
-repository's roughly 1.3M Rust lines, every build waits on it, and behavior that
-exists only as a `Dataset` method can be tested only through a full dataset.
-The proposal reports the Rust code growing 2.8 times in six months and expects
-the refactor to become harder the longer it waits.
+The proposal cites build and test cost. At its revision, `lance` held about
+615k of the repository's roughly 1.3M Rust lines. Builds waited on that crate,
+and testing a behavior exposed only through `Dataset` required opening a
+dataset. The proposal reports 2.8-fold growth in Rust code over six months.
 
 Target layering, transcribed from the proposal's figure. Each layer depends
 only on layers below it; index implementations depending upward on the index
@@ -140,11 +139,11 @@ Stable leaves: lance-core, lance-io, lance-file, lance-encoding,
 lance-linalg kernels; used directly, no interface
 ~~~
 
-| Move | Proposed change | State at `67faafe65` |
+| Move | Proposed change | State at `v15.0.0-beta.29` |
 | --- | --- | --- |
-| 1. Common index API crate | Grow `lance-index-core` into the contract between table and indexes: train from a stream of batches, update for new fragments, remap after compaction, report statistics. Query capabilities follow access pattern, not index type: `as_filter()` returns a row set for a predicate, `as_ranked()` a scored top-k stream (ANN distance, BM25). Each takes the prefilter (deletions plus filter results) as a parameter and reports `Option<Cost>`. Index-specific tuning (`nprobes`, `ef`, refine factor) travels as an opaque options bag. Predicates use Lance-owned types, with DataFusion translation in an adapter | [`lance-index-core`](../../rust/lance-index-core/Cargo.toml) is about 2.5k lines and depends on DataFusion common, expression and execution crates. `as_filter` / `as_ranked` exist only as result accessors in [MemWAL's index query module](../../rust/lance/src/dataset/mem_wal/index/query.rs), not as a dataset index contract |
-| 2. Plugin indexes | Vector, FTS and each scalar family become separate crates implementing the API. A registry keyed by index type maps manifest entries to implementations, and only the composition root names concrete types. The vector index takes a `KernelSet` of function pointers chosen once at load time, so downstream projects can supply faster kernels without forking | A registry exists for scalar plugins only ([registry.rs](../../rust/lance-index/src/registry.rs)). `lance-index` is one crate of about 221k lines. No `KernelSet` symbol exists, and the vector extension trait is in a `pub(crate)` module |
-| 3. Split `Dataset` | **Core table**, without DataFusion: open a version, list fragments, read and write fragments, take, deletion vectors, row IDs, transactions, commit. **Operations layer**, the only DataFusion user: scan planning, update, delete, merge insert, SQL. Operations become free functions or task objects that take a table; a `DatasetExt` trait may keep the method syntax | `lance` is about 610k lines, the dataset module about 360k of them. [`lance-table`](../../rust/lance-table/Cargo.toml) has no DataFusion dependency. `CompactionTask` is serializable but lives in the DataFusion-dependent `lance` crate |
+| 1. Common index API crate | Grow `lance-index-core` into the contract between table and indexes: train from a stream of batches, update for new fragments, remap after compaction, report statistics. Query capabilities follow access pattern, not index type: `as_filter()` returns a row set for a predicate, `as_ranked()` a scored top-k stream (ANN distance, BM25). Each takes the prefilter (deletions plus filter results) as a parameter and reports `Option<Cost>`. Index-specific tuning (`nprobes`, `ef`, refine factor) travels as an opaque options bag. Predicates use Lance-owned types, with DataFusion translation in an adapter | `lance-index-core` depends on DataFusion common, expression and execution crates. MemWAL uses `as_filter` and `as_ranked` as result accessors. [Dependencies](../../rust/lance-index-core/Cargo.toml) · [MemWAL query results](../../rust/lance/src/dataset/mem_wal/index/query.rs) |
+| 2. Plugin indexes | Vector, FTS and each scalar family become separate crates implementing the API. A registry keyed by index type maps manifest entries to implementations, and only the composition root names concrete types. The vector index takes a `KernelSet` of function pointers chosen once at load time, so downstream projects can supply faster kernels without forking | `lance-index` still owns the vector and FTS implementations and the scalar registry. The vector extension trait lives in a crate-private module. [Registry](../../rust/lance-index/src/registry.rs) · [Vector extension](../../rust/lance/src/session/index_extension.rs) |
+| 3. Split `Dataset` | **Core table**, without DataFusion: open a version, list fragments, read and write fragments, take, deletion vectors, row IDs, transactions, commit. **Operations layer**, the only DataFusion user: scan planning, update, delete, merge insert, SQL. Operations become free functions or task objects that take a table; a `DatasetExt` trait may keep the method syntax | `lance-table` owns manifest and transaction actions and has no direct DataFusion dependency. The serializable `CompactionTask` lives in the DataFusion-dependent `lance` crate. [Table dependencies](../../rust/lance-table/Cargo.toml) · [Task implementation](../../rust/lance/src/dataset/optimize/execution.rs) |
 | 4. Extract the WAL | `dataset/mem_wal` becomes its own crate over the core table, the index API and, if needed, the operations layer. The proposal says this move needs the most investigation | About 88k lines inside `lance`, with its own memtable, HNSW, index and scanner code |
 | 5. Engine-neutral task layer | Scan, search and write operations are described as serializable tasks: fragment or index-segment scans, partial index searches, write and commit steps. They run on one node or under Spark, Ray or another scheduler. DataFusion stays the default executor, but its types do not appear in task definitions. For merge insert, an engine may run the join and index lookups while Lance performs the write | Serializable plans exist for compaction and index optimization only. [`FullSchemaMergeInsertExec`](../../rust/lance/src/dataset/write/merge_insert/exec/write.rs) is a DataFusion execution node |
 
@@ -213,18 +212,27 @@ integration tests to become unit tests and per-interface contract tests,
 including one suite every index plugin must pass (train, remap, search with
 prefilter), run against each implementation and a fake.
 
-**Local check, 2026-11-24.** Tracked `.rs` lines at `67faafe65`: `lance` about
-610k, `lance-index` 221k, `lance-table` 61k, `lance-namespace-impls` 42k,
-`lance-index-core` 2.5k; the dataset module about 360k and `dataset/mem_wal`
-88k. These agree with the proposal's `d829354` figures (615k, 222k, 61k, 42k,
-2.5k; 358k, 88k) to within one percent. The Cargo dependency claims hold here
-too: `lance-namespace-impls` depends on `lance`, `lance-index` and
-`lance-table`, and `lance-index` on DataFusion's physical-plan crate. Two
-statements are older than this baseline:
+**Local check, 2026-11-24.** Counts include every tracked `.rs` line under
+each directory, including tests. The two dataset subdirectories are part of
+`rust/lance/`.
+
+| Directory | Proposal revision `d8293547c` | Current `main` at `v15.0.0-beta.29` |
+| --- | ---: | ---: |
+| `rust/lance/` | 614,806 | 633,963 |
+| `rust/lance/src/dataset/` | 357,995 | 369,560 |
+| `rust/lance/src/dataset/mem_wal/` | 87,885 | 88,226 |
+| `rust/lance-index/` | 222,054 | 231,988 |
+| `rust/lance-table/` | 60,997 | 80,793 |
+| `rust/lance-namespace-impls/` | 42,431 | 42,857 |
+| `rust/lance-index-core/` | 2,490 | 2,569 |
+
+The `lance-table` crate now contains the Transaction V2 action implementations
+and their tests. `lance-namespace-impls` still depends on `lance`, `lance-index`
+and `lance-table`, and `lance-index` uses DataFusion's physical-plan crate.
 
 - The quoted sizes of `scanner.rs` and `merge_insert` (about 16k and 15k lines)
   repeat #8973's September description. Both are already split into
-  submodules here: `scanner.rs` is about 1.4k lines beside 11.9k in `scanner/`.
+  submodules here: `scanner.rs` is about 1.4k lines beside 12.0k in `scanner/`.
 - The row-to-fragment request dates from 2026-09-16. This baseline exposes a
   `Dataset`-level resolver, added by
   [#10720](https://github.com/lance-format/lance/pull/10720) on 2026-11-09:
@@ -266,7 +274,7 @@ Statuses were read from the GitHub API on **2026-11-13**, with #7321 and #10797 
 | Item | Observed status | Planning consequence |
 | --- | --- | --- |
 | [Lance PR #7321: distributed centroid training](https://github.com/lance-format/lance/pull/7321) | Closed 2026-11-09; `merged_at=null` | Review its Arrow partial-statistics design and discussion; do not count it as merged functionality or an active implementation. |
-| [Lance PR #10797: SQ merge model validation](https://github.com/lance-format/lance/pull/10797) | Merged 2026-11-13; commit `793a9e5156556ef315062f051779ee47de32d5ad`, included in `67faafe65` | Rejects mismatched SQ bounds/bit widths in creation merges. Shared-bounds worker input remains separate work; no new validation fix is needed. |
+| [Lance PR #10797: SQ merge model validation](https://github.com/lance-format/lance/pull/10797) | Merged 2026-11-13; commit `793a9e5156556ef315062f051779ee47de32d5ad`, included in `v15.0.0-beta.29` | Rejects mismatched SQ bounds/bit widths in creation merges. Shared-bounds worker input remains separate work; no new validation fix is needed. |
 | [Lance #7319: centroid/codebook readers](https://github.com/lance-format/lance/issues/7319) | Open | Coordinate model-export/reuse work with this proposal; check current APIs first. |
 | [Lance #7032: segment UUID ownership](https://github.com/lance-format/lance/issues/7032) | Open | Separate logical job identity from fresh physical segment IDs; do not use a shared worker UUID as retry deduplication. |
 | [Lance #6860: ANN cost with many deltas](https://github.com/lance-format/lance/issues/6860) | Open | Include segment-count and routing costs in the benchmark matrix; reported timings are workload-specific. |

@@ -1,6 +1,6 @@
 # Lance — Vector Storage Deep Dive
 
-**Source baseline:** `main` at `67faafe65` (2026-11-16), workspace `15.0.0-beta.22`.
+**Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), workspace `15.0.0-beta.29`.
 
 **Scope.** How embedding vectors become bytes on disk — from Arrow schema
 through to the pages of a `.lance` file. Index storage is covered separately
@@ -34,7 +34,7 @@ kernels):
 | Element type | Bytes / value | Notes |
 |---|---|---|
 | `Float32` (`f32`) | 4 | **Most common.** All SIMD kernels support it. |
-| `Float16` (`f16`) | 2 | Feature-gated (`fp16kernels`); recent commits added kernels. |
+| `Float16` (`f16`) | 2 | Stored as half precision. Distance dispatch selects among the kernels compiled for the build and supported by the host. |
 | `BFloat16` (`bf16`) | 2 | Recent SIMD distance kernels added (commit `d0124edf`). |
 | `UInt8` (`u8`) | 1 | Hamming, L2, Cosine and Dot kernels exist; index type/metric admission is separate. |
 | `Float64` (`f64`) | 8 | Rare for embeddings; has SQ/distance kernels (commit `c913ff8f`). |
@@ -52,6 +52,11 @@ only lives in **indices** (PQ / SQ / RaBitQ — see `02-vector-indices.md`).
 children of type `Struct`, Lance uses
 `FixedSizeListStructuralEncoder` in
 `rust/lance-encoding/src/encodings/logical/fixed_size_list.rs`.
+
+For a sliced vector array, Python's `lance.arrow.cast` preserves the visible
+row range and the parent null mask when converting element types. For fixed
+lists with a non-nullable struct child, the file writer allows null child
+slots hidden by a null parent and rejects visible null children. [Cast implementation](../../python/python/lance/arrow.py) · [Writer tests](../../rust/lance-file/src/writer_tests.rs)
 
 ---
 
@@ -279,6 +284,10 @@ Notes:
   an existing dataset) does produce *additional* `DataFile`s per fragment.
   Each new column group is another `(uuid).lance` file referenced by the same
   `Fragment`.
+- A `compact_files` run with `max_data_files_per_fragment` set can repack
+  eligible base files in one fragment. Repacking an embedding with other
+  columns preserves row offsets, deletions, overlays and existing index coverage.
+  The planner schedules repacks for fragments left over after row rewrites. [Compaction planning](../../rust/lance/src/dataset/optimize/planning.rs)
 - Sparse updates may append a `DataOverlayFile`, whose coverage bitmap maps
   physical row offsets to rank-ordered values. V2 files support unequal
   column lengths so different overlay fields can cover different row sets.
@@ -377,6 +386,12 @@ Once the file is closed, the writer returns a `Fragment { id, files:
 [DataFile{...}], ... }` to the caller. The caller (usually the `Dataset` commit
 path) bundles these into a `Transaction` and writes a new manifest — see
 `00-overview.md` §4 for the commit path.
+
+For a staged data file part, Rust's
+`Dataset::write_data_file_part_with_file_writer_options` accepts the encoder
+cache budget (`FileWriterOptions::data_cache_bytes`) at write time. The part
+retains its encoded pages until concatenation, so a job staging several parts
+must account for each of them. [Part writer](../../rust/lance/src/dataset/write.rs)
 
 ---
 

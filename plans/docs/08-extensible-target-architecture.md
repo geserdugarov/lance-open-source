@@ -2,7 +2,7 @@
 
 Status: **proposal**, 2026-11-13. Existing seams are identified in [06](06-distributed-current-state.md); none of the conceptual interfaces below is a newly available Lance API.
 
-Implementation references use `67faafe65` (2026-11-16); external ecosystem
+Implementation references use `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24); external ecosystem
 evidence retains the pins and observation dates in [07](07-ecosystem-evidence.md).
 Reconciled on **2026-11-24** with the upstream crate-architecture proposal
 summarized in [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal);
@@ -132,8 +132,9 @@ The core's internal `IndexVisibility` already shares snapshot-local overlay
 selection between exclusion and replay. Build on that owner if a public
 fallback-task seam is needed. Capability admission must also distinguish
 fixed/adaptive shared batch search, cross-column refinement, WARP multivector
-search, and flat-RQ code-only refinement; a connector cannot safely accept
-every core request merely because it can forward a `nearest` dictionary.
+search, and flat-RQ code-only refinement. For IVF_HNSW_RQ, the worker must
+honor the requested `rq_graph_scoring` mode. Changing how the graph is
+searched can change the candidates before a coordinator sees them.
 
 Keep Arrow batches as the internal stream shape. For an in-process ABI boundary, evaluate Arrow C Data/Stream with explicit ownership and cancellation. For interprocess transport, use a versioned message protocol with Arrow IPC; evaluate Flight only if streaming RPC is actually needed. The [Arrow C Data specification](https://arrow.apache.org/docs/format/CDataInterface.html) applies to same-process interchange and is not a network protocol.
 
@@ -153,14 +154,20 @@ Use `ObjectStoreProvider`, store wrappers, credential accessors, namespaces and 
 
 ## Compatibility and capability negotiation
 
-A successfully deserialized plan is not necessarily correctly executable. The current compaction `TaskData` comments explicitly warn that older workers can ignore output-clustering/metadata fields. Require capability admission before sending such tasks. See [planning.rs](../../rust/lance/src/dataset/optimize/planning.rs).
+Check that a worker understands the compaction task kind before dispatch.
+An older worker can deserialize a column repack and execute a row rewrite
+instead. Older workers can also ignore output clustering or metadata fields.
+[Compaction task definition](../../rust/lance/src/dataset/optimize/planning.rs)
 
 Current execution schemas include explicit empty fragment selections and
 list-structure/visibility projection requirements. Preserve those distinctions
 across transport; absence and an empty selection are not interchangeable.
-Separately, `protos/transaction/` specifies Transaction V2, but this runtime
-rejects `CompositeOperation`. Do not negotiate multi-action execution based on
-the presence of generated protobuf types.
+For Transaction V2, admission must cover the requested actions and the
+publisher's ability to opt into `CompositeOperation` in Rust. A mixed race
+between a named operation and a composite produces a conflict. Two composites
+are checked against the coordinates and preconditions of their actions.
+The `lance-protos` crate supplies the schemas for a pinned revision.
+[Conflict resolver](../../rust/lance/src/io/commit/conflict_resolver/check.rs) · [Schema package](../../protos/Cargo.toml)
 
 Proposed rules:
 

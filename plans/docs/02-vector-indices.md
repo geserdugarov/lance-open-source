@@ -1,6 +1,6 @@
 # Lance — Vector Indices: Algorithms & Composition
 
-**Source baseline:** `main` at `67faafe65` (2026-11-16), workspace `15.0.0-beta.22`.
+**Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), workspace `15.0.0-beta.29`.
 
 **Scope.** The algorithmic content of Lance's vector index family. For how
 the resulting index is laid out on disk and how a query executes against it,
@@ -150,6 +150,13 @@ after null/non-finite filtering. Cosine normalization matches dataset training.
 Supplied centroids are retraining seeds (`retrain=true`); streaming sample
 training is not supported by this entry point.
 
+For dataset-based IVF training on fixed-size-list columns,
+`LANCE_IVF_TRAINING_SAMPLE_BLOCK_ROWS=N` lets the sampler read random aligned
+runs of adjacent rows. The default of 1 samples individual rows. Larger runs
+can reduce object-store requests, but a table ordered by vector similarity
+can yield a less representative sample. Quantizer training samples rows
+independently. [Training sampler](../../rust/lance/src/index/vector/utils.rs)
+
 **Why these target partition sizes?** The partition size governs the
 recall/latency trade-off at query time:
 - Smaller partitions → cheaper per-partition scan but more partitions to
@@ -213,6 +220,11 @@ pub struct ProductQuantizer {
 | `num_bits` | 8 | Must be 4 or 8. Four-bit PQ packs two sub-vector codes per byte, so `M` must be even. |
 | `max_iters` | 50 | per-sub-vector k-means iterations |
 | `sample_rate` | 256 | training rows per codebook centroid |
+
+IVF-PQ trains and encodes L2 and cosine vectors as residuals of their IVF
+centroids. For Dot it uses the raw vectors. The shared-model and Torch build
+paths choose codewords by L2 distance in that training space. Search uses
+the metric recorded in the segment. [Shared-model preparation](../../python/src/indices.rs) · [Torch build](../../python/python/lance/vector.py)
 
 **Distance at query time.** PQ uses **asymmetric distance**: the query is
 full-precision, each sub-vector distance to each codebook centroid is
@@ -413,10 +425,12 @@ without fetching raw vectors for indexed candidates. Exact refinement is a
 separate optional stage. Session-scoped scan policies and FRI-aware translated
 views preserve filtering and row identity; see `03-index-on-disk-and-search.md`.
 
-`IVF_HNSW_RQ` uses the same quantizer with graph traversal inside each IVF
-partition. Its graph must be rebuilt on physical merge. The flat IVF_RQ
-code-only `quantized_refine_factor` path is not supported by HNSW-RQ; use its
-HNSW search controls and optional exact refinement instead.
+`IVF_HNSW_RQ` scores every visited graph node with the full stored RQ code
+by default (`rq_graph_scoring="multi_bit"`). With `"one_bit_rerank"` it walks
+using sign bits, then rescores the `ef` finalists with the full code. Rust
+and Python expose this query option. Java uses the default. Both modes use
+the same on-disk graph and support optional exact refinement. Physical segment
+merge rebuilds the graph. `quantized_refine_factor` is specific to flat IVF_RQ. [Graph scoring modes](../../rust/lance-index/src/vector.rs)
 
 Java can broadcast reusable FAST rotations through `RQModel.build`,
 `toBytes`/`fromBytes`, and `RQBuildParams.Builder.setModel`. The model must
@@ -508,9 +522,8 @@ paths include `aarch64` NEON and `loongarch64`.
 Lance selects f32/f64 L2/Dot and Hamming kernels once and fills batches through
 `l2_distance_batch_into`, `dot_distance_batch_into`, and
 `hamming_distance_batch_into`, avoiding per-distance dispatch and intermediate
-allocations. These are Rust linalg API changes;
-callers should follow the current signatures rather than porting an older
-iterator-based implementation verbatim.
+allocations. The compiled f16/bf16 C distance kernels are also selected once
+from the detected host features. [Half-precision dispatch](../../rust/lance-linalg/src/distance.rs)
 
 This selection happens inside `lance-linalg`; no hook for supplying an external
 kernel was identified at this baseline. An upstream proposal dated 2026-11-16
@@ -600,6 +613,12 @@ partitions per query token and accepts `warp_imputation_rank`; it does not
 perform late probe expansion. See `rust/lance-index/src/vector/warp.rs` and
 `rust/lance/src/io/exec/knn/warp.rs`.
 
+When building from a sliced or nullable multivector column, Lance flattens
+only vectors belonging to visible, non-null parent rows. During a partition
+split it removes reshuffled rows from the old partitions, including their
+tokens in otherwise unaffected partitions. This keeps a token from being
+searched twice after optimization.
+
 ---
 
 ## 10. Tunables cheat-sheet
@@ -662,7 +681,7 @@ types and refinement factors. See
 | Distance enum + kernels | `rust/lance-linalg/src/distance.rs` (+ `distance/*.rs`) |
 | SIMD | `rust/lance-linalg/src/simd.rs` (+ `simd/*.rs`) |
 
-These are `67faafe65` paths. The upstream crate-architecture proposal would
+These are `v15.0.0-beta.29` paths. The upstream crate-architecture proposal would
 move index implementations into per-family crates behind an index API crate
 grown from `lance-index-core`, with `lance` re-exporting the public items.
 Re-check locations after any such move

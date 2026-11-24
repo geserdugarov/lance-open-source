@@ -3,7 +3,7 @@
 Date: 2026-11-13. Examples distinguish existing APIs from design sketches. API examples reflect source signatures; they are not qualified integration recipes. Use the repository's prescribed environments and the pinned dependency combinations in [07](07-ecosystem-evidence.md) before running them.
 
 Core API references and the illustrative producer revision were refreshed to
-`67faafe65` (2026-11-16). External examples retain their pinned artifacts.
+`v15.0.0-beta.29` (2026-11-24). External examples retain their pinned artifacts.
 
 ## A. Existing Lance API: a two-worker write protocol, locally
 
@@ -123,7 +123,7 @@ The following is an **illustrative design record**, not a supported Lance wire f
   },
   "required_capabilities": ["pinned-snapshot", "segment-build", "result-provenance"],
   "native_plan": {
-    "producer_revision": "67faafe651d3bbec9ee537d7313890328e9e7fa3",
+    "producer_revision": "ded121cd9a99dc83040cf41049dc2bd3963241b9",
     "artifact_uri": "s3://example-plans/build-0042/plan.json",
     "digest": "example-sha256-plan"
   },
@@ -182,10 +182,11 @@ the pseudocode chooses replanning for a job that requires exact coverage.
 
 Different operations need different reconciliation keys. Index publication can inspect segment identities. For append, first evaluate the existing `Transaction.uuid` and `read_transaction` APIs. [TransactionBuilder](../../rust/lance-table/src/transaction/builder.rs) accepts a caller UUID or generates one; the [commit retry loop](../../rust/lance/src/io/commit.rs) clones the transaction, and the [conflict resolver's finish path](../../rust/lance/src/io/commit/conflict_resolver/finish.rs) returns the append transaction with that UUID intact. This establishes UUID preservation through internal retries by code inspection. Python [LanceDataset.commit](../../python/python/lance/dataset.py) accepts a `Transaction`, and `read_transaction(version)` exposes committed transaction identity; Rust [Dataset::read_transaction](../../rust/lance/src/dataset.rs) reads the opened version's transaction.
 
-These examples use implemented named operations. Transaction V2's
-`CompositeOperation` is specified in `protos/transaction/` but is rejected by
-the runtime decoder at this baseline; it is not a way to atomically combine a
-coordinator-ledger update with this append protocol.
+The Python example uses a named operation. A Rust publisher can instead
+commit ordered actions to one table with
+`CommitBuilder::with_experimental_composite_operations(true)`. Its atomic
+boundary is the Lance manifest. The coordinator must still reconcile an
+external ledger after an ambiguous outcome. [Commit API](../../rust/lance/src/dataset/write/commit.rs)
 
 Persist the transaction before submission and reconcile its UUID against all candidate committed versions, since later commits can hide it from a latest-only check. Exercise conflict retries, lost acknowledgement and coordinator restart before relying on this protocol. Retain the required manifest/transaction history throughout recovery; missing or cleaned history cannot prove non-publication. A newly constructed transaction normally gets a new UUID, and reusing a UUID alone does not establish automatic duplicate suppression on resubmission. An external ledger update and a Lance commit are not atomic unless an explicitly implemented shared protocol makes them so; add another deduplication mechanism only for gaps demonstrated by these experiments.
 

@@ -1,7 +1,7 @@
 # Lance — Architecture Overview (Vector-Focused)
 
-**Source baseline:** `main` at `67faafe65` (2026-11-16), workspace
-`15.0.0-beta.22`. This is a development snapshot; the latest stable tag in
+**Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), workspace
+`15.0.0-beta.29`. This is a development snapshot; the latest stable tag in
 this checkout is `v14.0.3`. See `04-lance-versions.md` for release boundaries.
 
 A field guide for contributors whose primary interest is **storing and searching
@@ -37,7 +37,8 @@ my_dataset.lance/
 │   │   └── auxiliary.idx              <- Codes, row IDs, or auxiliary structures
 │   └── ...                            <- A named logical index may have many segments
 ├── _deletions/                        <- Per-fragment deletion vectors
-│   └── <frag>-<read_version>-<id>.{arrow|bin} <- Deletion vector, added lazily
+│   ├── <frag>-<read_version>-<id>.{arrow|bin} <- Name derived from fragment metadata
+│   └── <uuid>.{arrow|bin}             <- Example of an explicit path recorded in the manifest
 └── _transactions/                     <- Transaction log (used for conflict resolution)
     └── <read_version>-<uuid>.txn
 ```
@@ -55,8 +56,10 @@ Constants authoritatively defined in the source:
 **Key property:** data and index files are **append-only and immutable**. An
 `UPDATE` may append replacement fragments or sparse overlay files, while a
 `DELETE` records a deletion vector, either in `_deletions/` or inline in the
-manifest when the configured byte budget permits it. Inline deletions set a
-table feature flag, so they require a reader that supports that feature.
+manifest when the configured byte budget permits it. An external deletion
+file can carry an explicit path relative to its storage base, so its name can
+survive fragment ID allocation at commit. Inline deletions and explicit paths
+each have a reader feature flag.
 The next manifest references the new objects; older manifests retain their
 original snapshot. This is what makes
 Lance zero-copy-versioned.
@@ -102,11 +105,13 @@ For vector workloads, the hot path touches:
 
 `lance-datafusion-exec` owns shared execution/stream contracts so index
 implementations do not need the full DataFusion crate. `lance-select` owns row
-address masks and selection algebra. The workspace uses Arrow 59.2 and
-DataFusion 55. For the full ownership map, read `ARCHITECTURE.md`: scanner
-configuration is in `dataset/scanner/builder.rs`, vector planning in
+address masks and selection algebra. `lance-arrow` now owns the scalar and
+statistics modules previously packaged in separate crates. The workspace
+lockfile resolves the `arrow` crate to 59.3.2, `arrow-array` and
+`arrow-schema` to 59.3.3, and DataFusion to 55.2.0.
+Scanner configuration is in `dataset/scanner/builder.rs`, vector planning in
 `dataset/scanner/vector.rs`, and index coordination in `index/lifecycle.rs`
-with separate loading, provenance, statistics, and prewarm modules.
+with separate loading, provenance, statistics, and prewarm modules. [Architecture map](../../ARCHITECTURE.md)
 
 **Proposed restructuring (upstream, not implemented).** A maintainer proposal
 dated 2026-11-16 would re-layer these crates: an index API crate grown from
@@ -115,7 +120,7 @@ DataFusion-free core table beside a DataFusion-based operations layer, MemWAL
 in its own crate, and an engine-neutral task layer. `lance` would re-export
 the moved code, so public paths stay while the source paths cited throughout
 chapters 01–05 would change. The tree above remains the description of
-`67faafe65`. See [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)
+`v15.0.0-beta.29`. See [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)
 for the summary and target layering, and
 [08](08-extensible-target-architecture.md#alignment-with-the-upstream-crate-refactor)
 for its effect on the integration plan.
@@ -200,10 +205,10 @@ subtracting a presumed carried suffix. `index/visibility.rs` owns snapshot-local
 overlay selections; query-visible index listings are cached separately from
 raw manifest metadata.
 
-Transaction schemas live in `protos/transaction/`. The action-based Transaction
-V2 specification and protobuf messages are present, but the runtime decoder
-rejects `CompositeOperation`; the ordinary named operations remain the
-implemented commit path. A schema declaration is not a new transaction API.
+Transaction V2 lets a Rust caller apply an ordered `CompositeOperation` to
+one table in one manifest commit. The caller enables it per commit with
+`CommitBuilder::with_experimental_composite_operations(true)`. The regular
+write and index APIs still publish named operations. [Transaction specification](../../docs/src/format/table/transaction.md#action-based-transactions-transaction-v2)
 
 A `Scanner` (state in `rust/lance/src/dataset/scanner.rs`, planning in its
 `scanner/` submodules) stitches these together at read time; the query path is

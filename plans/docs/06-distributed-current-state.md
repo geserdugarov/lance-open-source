@@ -1,7 +1,7 @@
 # Distributed Lance: current state and extension audit
 
 External research date: **2026-11-13**. Lance implementation refreshed against
-`67faafe65` on **2026-11-16**. Upstream crate-architecture proposal read on
+`v15.0.0-beta.29` on **2026-11-24**. Upstream crate-architecture proposal read on
 **2026-11-24**. Status: evidence and assessment, not a feature announcement.
 
 ## Recommendation
@@ -14,13 +14,13 @@ Lance already has distributed work units. The main opportunity is making those u
 
 | Evidence boundary | Exact baseline | Interpretation |
 | --- | --- | --- |
-| Implementation baseline | `67faafe651d3bbec9ee537d7313890328e9e7fa3`, 2026-11-16 | Later planning and agent-configuration commits are outside this implementation baseline |
-| Workspace package | `15.0.0-beta.22` | Development APIs must not be advertised as stable release capabilities |
+| Implementation baseline | `ded121cd9a99dc83040cf41049dc2bd3963241b9`, 2026-11-24 | Later planning and agent-configuration commits are outside this implementation baseline |
+| Workspace package | `15.0.0-beta.29` | Development APIs must not be advertised as stable release capabilities |
 | Latest stable tag in this checkout | `v14.0.3`, release commit dated 2026-11-15 | Stable reference from local history; this audit did not run its binaries |
 | External integration evidence | Repository/release pins recorded on 2026-11-13 in chapter 07 | Kept at their recorded revisions; the Lance rebase does not qualify those adapters against the new core |
-| Upstream direction | Crate-architecture proposal dated 2026-11-16 and discussion #8973, both read on 2026-11-24 | Proposed; none of its crates, traits or task types exist at the implementation baseline |
+| Upstream direction | Crate-architecture proposal dated 2026-11-16 and discussion #8973, both read on 2026-11-24 | The proposed index API, WAL crate and engine-neutral task layer remain design targets. Chapter 07 compares the proposal's revision with this baseline. |
 
-External releases, repository pins, and dated issue states are in [07-ecosystem-evidence.md](07-ecosystem-evidence.md). The [vector architecture overview](00-overview.md) and [distributed index guide](05-distributed-vector-index-creation.md) use the same `67faafe65` implementation baseline; external issue-status refreshes are dated separately.
+External releases, repository pins, and dated issue states are in [07-ecosystem-evidence.md](07-ecosystem-evidence.md). The [vector architecture overview](00-overview.md) and [distributed index guide](05-distributed-vector-index-creation.md) use the same `v15.0.0-beta.29` implementation baseline; external issue-status refreshes are dated separately.
 
 Classification used throughout this plan:
 
@@ -31,17 +31,18 @@ Classification used throughout this plan:
 
 ## Capability inventory
 
-All source links below resolve within this checkout. For a permanent upstream link, use `https://github.com/lance-format/lance/blob/67faafe651d3bbec9ee537d7313890328e9e7fa3/` followed by the same repository path.
+All source links below resolve within this checkout. For a permanent upstream link, use `https://github.com/lance-format/lance/blob/ded121cd9a99dc83040cf41049dc2bd3963241b9/` followed by the same repository path.
 
 | Capability | Implemented surface and evidence | What an external system still owns |
 | --- | --- | --- |
 | Distributed ingestion | [Distributed write guide](../../docs/src/guide/distributed_write.md), [Python fragment writer](../../python/python/lance/fragment.py): `write_fragments`; coordinator uses `LanceDataset.commit` | Input partition assignment, selecting one successful attempt, replay protection, durable job state |
 | Concurrent publication | [CommitHandler](../../rust/lance-table/src/io/commit.rs), conditional put / rename / external handlers; [transaction processing](../../rust/lance-table/src/transaction.rs) | Correct store capabilities, one authoritative publication path, commit-outcome reconciliation |
-| Transaction V2 wire specification | [Action schemas](../../protos/transaction/actions.proto) and [specification](../../docs/src/format/table/transaction.md) are present, but [runtime decoding](../../rust/lance-table/src/transaction/proto.rs) rejects `CompositeOperation` | Do not advertise multi-action execution from schema availability; named operations remain the implemented path |
+| Branch creation | Rust can reserve a branch name at a pinned source version, then call `complete_branch` after revalidating external state. Completion checks the reservation identity. [Dataset branch APIs](../../rust/lance/src/dataset.rs) | Retain the source version until the clone is published. An incomplete reservation has no manifest. |
+| Transaction V2 | Rust decodes and applies ordered actions atomically to one manifest. Each commit requires `with_experimental_composite_operations(true)`. [Actions](../../rust/lance-table/src/transaction/action.rs) · [CommitBuilder](../../rust/lance/src/dataset/write/commit.rs) | Admit by language and action support. Python and Java expose named operations. Coordinate external ledger updates separately. |
 | External metadata authority | [ExternalManifestStore](../../rust/lance-table/src/io/commit/external_manifest.rs) and [namespace integration](../../rust/lance-namespace/src/lib.rs) | Adapter implementation, database/service availability, fencing and conformance; an external store is not automatically a PostgreSQL implementation |
 | Distributed index creation | [DatasetIndexExt / IndexSegment](../../rust/lance/src/index/api.rs), [lifecycle](../../rust/lance/src/index/lifecycle.rs), [Python dataset](../../python/python/lance/dataset.py): uncommitted build, optional merge, commit | Snapshot pinning, target coverage, model identity, task/attempt selection, recovery |
 | Distributed index optimization | [OptimizeIndicesPlan](../../rust/lance/src/index/optimize.rs): serialized plans, build/merge tasks, commit; Rust/Python/Java bounded consolidation, Rust UUID-selected consolidation | Persist planning options through commit; distinguish no-training suffix consolidation from selected-segment rebuilding; validate full selected coverage |
-| Distributed compaction | [CompactionPlan / CompactionPlanner](../../rust/lance/src/dataset/optimize/planning.rs), [CompactionTask / RewriteResult](../../rust/lance/src/dataset/optimize/execution.rs), [commit](../../rust/lance/src/dataset/optimize/commit.rs) | Task execution policy, transient storage budgets, task-version admission and cleanup coordination |
+| Distributed compaction | Tasks can rewrite rows or repack columns within one fragment. A mixed run publishes rewrites and repacks in separate commits. [Plan](../../rust/lance/src/dataset/optimize/planning.rs) · [Execution](../../rust/lance/src/dataset/optimize/execution.rs) · [Commit](../../rust/lance/src/dataset/optimize/commit.rs) | Admit workers by task kind. If the repack commit fails, reconcile the published rewrite before retrying. |
 | Query subdivision | [Scanner source](../../rust/lance/src/dataset/scanner/source.rs), [vector planning](../../rust/lance/src/dataset/scanner/vector.rs), Python `index_segments` and fragment selection | Interprocess dispatch, global merge, cancellation, admission control, and service availability; Lance-Ray supplies a published distributed vector-search implementation |
 | Overlay visibility / query caching | Internal [IndexVisibility](../../rust/lance/src/index/visibility.rs) shares exclusion/replay selections; [session caches](../../rust/lance/src/session/index_caches.rs) bind listings and eligible RQ rankings to snapshots | Reuse core semantics; an internal owner is not yet a public distributed fallback-selection API |
 | Streaming ingestion primitives | [MemWAL](../../rust/lance/src/dataset/mem_wal.rs), shard manifests, writer epochs and durable/non-durable modes | Writer placement, failover service, workload routing and durability configuration; this is not PostgreSQL WAL or proof of distributed SQL transactions |
@@ -69,7 +70,12 @@ SQL / Ray / Python / Java adapters
 
 This is an ownership diagram, not a claim that all Cargo dependencies form a perfectly isolated stack. [ARCHITECTURE.md](../../ARCHITECTURE.md) is the authoritative navigation guide. In particular, `lance-index-core` still depends on DataFusion common, expression and execution crates; `lance-datafusion-exec` avoids the umbrella `datafusion` crate but uses its component crates. A PostgreSQL adapter cannot assume that the index core is already engine-neutral at the type or dependency level. See their [Cargo manifest](../../rust/lance-index-core/Cargo.toml) and [execution manifest](../../rust/lance-datafusion-exec/Cargo.toml).
 
-The coupling is also a matter of size and containment. At this baseline `lance` holds about 610k tracked Rust lines, the dataset module about 360k of them, and MemWAL about 88k inside that module. `lance-index` is one crate of about 221k lines, and `lance-namespace-impls` depends on the whole `lance` crate. An upstream proposal dated 2026-11-16 targets exactly this: an index API crate without DataFusion types, per-index plugin crates, a DataFusion-free core table beside a DataFusion-based operations layer, a separate WAL crate, and an engine-neutral task layer. It is **proposed**, keeps the public `lance` and `pylance` APIs through re-exports, and is summarized with a local check in [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal). The diagram above remains the description of what exists.
+At this revision `lance` contains about 634k tracked Rust lines, including 370k
+under `src/dataset/` and 88k under `src/dataset/mem_wal/`. `lance-index`
+contains 232k, and `lance-namespace-impls` depends on the whole `lance`
+crate. The upstream proposal would move the index API, index families, core
+table, operations, WAL and task layer into separate owners while preserving
+public entry points through re-exports. [Proposal and source measurements](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)
 
 | Boundary | Assessment | Smallest useful next step |
 | --- | --- | --- |
@@ -91,7 +97,10 @@ Merged coverage must be fresh against every contributing build version, not
 just one representative version. Current manifests may store independent
 covering fields; use `keyed_fields()` and `dependency_fields()` rather than
 reconstructing dependencies in an adapter. Current JSON/NGram/RTree/MinHash
-layouts can return physical addresses even on stable-row-ID tables.
+layouts can return physical addresses even on stable-row-ID tables. Scalar
+evaluation tags each mask with its domain and resolves mixed-domain predicates
+to addresses. Each scalar segment also restricts its answers to its own
+effective coverage. [Mask domains](../../rust/lance-select/src/result.rs) · [Scalar segment search](../../rust/lance/src/index/scalar_logical.rs)
 
 An adapter that reads a fragment ID out of a row ID's bit layout is wrong once
 row IDs are stable. Resolve through `row_ids_to_row_addrs` (Rust),
@@ -102,8 +111,9 @@ and are development APIs, absent from `v14.0.3`. The upstream proposal still
 lists such a resolver as an open question for its core table API, so its
 eventual home may change.
 
-The query contract includes adaptive shared scans, cross-column refinement and
-WARP multivector search. These do not automatically extend Lance-Ray's pinned
+The query contract includes adaptive shared scans, cross-column refinement,
+WARP multivector search and per-query IVF_HNSW_RQ graph scoring.
+These do not automatically extend Lance-Ray's pinned
 search implementation. Admit supported request shapes explicitly and compare
 against the core scanner; see [03](03-index-on-disk-and-search.md).
 
@@ -121,4 +131,4 @@ MemWAL already contains writer fencing and generation concepts. Reuse their docu
 
 ## Research limits
 
-This is source inspection and dated public-source research, not a cluster benchmark or validation of a complete SQL/Ray/NPU stack. Lance implementation references match `67faafe65`; external connector pins and issue observations retain their own dates. Public issue reports identify investigation targets, not independently reproduced defects. The crate-architecture proposal was read as a document: its crate sizes and dependency claims were checked against this checkout, while its repository-growth and CI-timing figures were not re-measured. The [validation plan](12-validation-and-experiments.md) turns those gaps into explicit experiments.
+This is source inspection and dated public-source research, not a cluster benchmark or validation of a complete SQL/Ray/NPU stack. Lance implementation references match `v15.0.0-beta.29`; external connector pins and issue observations retain their own dates. Public issue reports identify investigation targets, not independently reproduced defects. The crate-architecture proposal was read as a document: its crate sizes and dependency claims were checked against this checkout, while its repository-growth and CI-timing figures were not re-measured. The [validation plan](12-validation-and-experiments.md) turns those gaps into explicit experiments.

@@ -1,6 +1,6 @@
 # Lance v1 through v14 and v15 Development — Version Lines and What to Anchor To
 
-**Source baseline:** `main` at `67faafe65` (2026-11-16), workspace `15.0.0-beta.22`.
+**Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), workspace `15.0.0-beta.29`.
 Release history is bounded to the tags available in this checkout: `v14.0.3`
 is the latest stable tag (release commit dated 2026-11-15); the v15 betas
 remain pre-releases.
@@ -56,12 +56,13 @@ experiments. Stable 2.1/2.2 retain their encoding contracts. Table features
 such as spilled lineage and tagged FRI also have their own feature-flag and
 reader/writer capability rules, independent of the data-file selector.
 
-Transaction V2 is another separate contract: its action schemas and
-specification live under `protos/transaction/` and
-`docs/src/format/table/transaction.md`. At this baseline the Rust decoder in
-`rust/lance-table/src/transaction/proto.rs` recognizes but rejects
-`CompositeOperation`; schema availability does not establish an executable
-multi-action transaction API. Ordinary named transactions remain implemented.
+Transaction V2 has its own compatibility boundary. On this development revision,
+Rust decodes a `CompositeOperation` and can publish its ordered actions in one
+manifest with `CommitBuilder::with_experimental_composite_operations(true)`.
+A snapshot scan can read the resulting manifest without decoding its inline
+transaction. Reading transaction history and checking concurrent commits
+require understanding the operation. An unknown action fails decoding.
+Python and Java expose named operations. [Transaction V2 specification](../../docs/src/format/table/transaction.md#action-based-transactions-transaction-v2)
 
 The format guide documents a concrete exception for `FixedSizeList` columns
 whose inner values are all null: the corrected full-zip encoding in v12 is
@@ -367,10 +368,12 @@ The first stable v9 release was followed by the corruption-safety patch
 
 ### v15 development (`main`, not a stable release)
 
-The checked-out workspace declares `15.0.0-beta.22`. These changes are present
-at `67faafe65`; they are not promises about the eventual v15 stable release:
+The checked-out workspace declares `15.0.0-beta.29`. The following changes
+are present on `main` at `v15.0.0-beta.29`.
 
-- **Arrow 59.2 / DataFusion 55** are the current dependencies (#10397).
+- **Arrow and DataFusion** are on the 59.3 and 55.2 lines in the workspace
+  lockfile. `lance-arrow` now contains the scalar and statistics
+  modules formerly shipped as `lance-arrow-scalar` and `lance-arrow-stats` (#11294).
   `lance-datafusion-exec` separates shared execution contracts from full
   DataFusion dependencies (#10251).
 - **Distributed optimization reaches Python and Java** (#10328, #10332),
@@ -382,7 +385,9 @@ at `67faafe65`; they are not promises about the eventual v15 stable release:
   separate selected-segment consolidation can retrain when models differ
   (#10698).
 - **IVF_HNSW_RQ** joins the persisted vector index family (#10522), including
-  fragment builds and physical merge with graph rebuilding. SQ creation merges
+  fragment builds and physical merge with graph rebuilding. Each query can
+  score visited nodes with the full RQ code (default) or walk with sign bits
+  and rerank with the full code (#10910). SQ creation merges
   reject mismatched bounds/bit widths (#10797); workers still lack a public
   shared-SQ-bounds input.
 - **Native RaBitQ** adds plane reads, resident columns, row-addressable caches,
@@ -399,6 +404,10 @@ at `67faafe65`; they are not promises about the eventual v15 stable release:
   (#10443); adaptive RQ and adaptive exact refinement retain per-query execution.
   Lower `search_effort` values have metric/`k` routing-recall calibration
   (#10695). Prefilters can skip provably empty segments (#10485).
+- **IVF training and compaction** gain opt-in contiguous sampling for IVF
+  centroids (#11270), raw-vector Dot IVF-PQ training and encoding across
+  distributed and Torch builds (#11218, #11199), and load-time FRI remapping
+  for IVF_HNSW graphs with deleted rows (#11141).
 - **Cross-column vector refinement** scores coarse candidates in another
   Float32 vector column. **WARP multivector search** (#10927) scores token
   partitions with centroid-derived imputation; it is a query path over existing
@@ -409,19 +418,32 @@ at `67faafe65`; they are not promises about the eventual v15 stable release:
   Stable file identities remain unchanged.
 - `DataFile` and `IndexFile` carry optional metadata-size hints (#9168).
   Small deletion vectors can be stored inline under a table feature flag
-  (#10164). These table capabilities are separate from the 2.2 file selector.
+  (#10164). An explicit `DeletionFile.path` requires the reader flag
+  `FLAG_DELETION_FILE_PATHS` while present. The writer flag stays set so
+  cleanup preserves files referenced by older manifests (#10914).
+  `IndexMetadata.local_fragment_aliases` has a wire definition and
+  a reserved flag, and readers currently reject nonempty maps (#10780).
+- **Column repacking** can combine backfilled files within one fragment
+  without moving rows. A mixed compaction publishes rewrites first, then
+  repacks in a separate `DataReplacement { data_change: false }` commit
+  (#9604). Python and Java also expose compaction writer-buffer options (#11246).
 - **Independent covering fields** have a manifest feature flag (#10662);
   index consumers must use the key/dependency helpers rather than assume a
   carried suffix. RTree implementation moves to optional `lance-geo` (#10579),
-  with distributed optimization (#10981); LabelList also supports bounded
-  optimization (#10954). Current JSON, NGram, RTree and MinHash layouts use
-  row-address domains (#9856, #9858). Experimental ListElement indexing over
-  `list<struct>` and whole-predicate plugin planning extend the scalar surface
-  (#10949, #10950, #10768).
-- **Transaction V2 schemas/specification** land in #7954, while decoding
-  `CompositeOperation` still fails closed. Snapshot-local index visibility,
-  complete merged-coverage provenance, and compaction coverage withdrawal
-  preserve query correctness across overlays and remapping (#10823, #10833).
+  with distributed optimization (#10981). Bounded optimization also supports
+  LabelList, eligible BloomFilter segments and MinHash LSH (#10954, #10977,
+  #10884). Scalar filter evaluation combines mixed row-ID and row-address
+  results in the address domain on stable-ID tables (#11012). Experimental
+  ListElement indexing over `list<struct>` and whole-predicate plugin planning
+  extend the scalar surface (#10949, #10950, #10768).
+- **Transaction V2** adds Rust execution for the action schemas introduced
+  by #7954, including index, overlay and fragment-reuse actions (#8644,
+  #8645, #8646). Action-based vector segment additions validate the final
+  same-name segment set before publication (#11213). The `lance-protos` crate
+  supplies the matching schema directory to downstream build scripts (#11137).
+- Snapshot-local index visibility, complete merged-coverage provenance, and
+  compaction coverage withdrawal preserve query correctness across overlays
+  and remapping (#10823, #10833).
 - Memory observation includes I/O schedulers, DataFusion pools and MemWAL
   (#10760), index-build trace events (#10754), execution reservation peaks
   (#11037), and a programmatic switch (#10866). These report resource use;
@@ -440,8 +462,9 @@ version, and defers any decision on the DataFusion dependency. It is not an
 anchoring consideration until a stable release ships part of it; see
 [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal).
 
-The automatic compatibility matrix uses **stable releases only**, including
-each case's `min_version`. Keep tests of v15 development behavior in ordinary
+The automatic compatibility matrix selects **stable releases only** and skips
+releases newer than the checkout. Each case's `min_version` must also be a
+stable release. Keep tests of v15 development behavior in ordinary
 unit/integration suites until a stable release defines that contract; do not
 encode beta-to-beta boundaries in `python/python/tests/compat`.
 

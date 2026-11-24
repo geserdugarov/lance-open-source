@@ -1,6 +1,6 @@
 # Lance — Vector Index On-Disk Format & Query Execution
 
-**Source baseline:** `main` at `67faafe65` (2026-11-16), workspace `15.0.0-beta.22`.
+**Source baseline:** `main` at `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), workspace `15.0.0-beta.29`.
 
 **Scope.** What a committed vector index looks like on disk, how it is
 referenced from the manifest, and the exact sequence of calls that happens
@@ -71,8 +71,9 @@ it is empty for the vector segments discussed here. Use `keyed_fields()` and
 `FLAG_INDEPENDENT_COVERING_FIELDS` selects the persisted layout for the whole
 index section; transaction files retain the suffix representation.
 
-`IndexFile` includes an optional `file_metadata_size_bytes` hint for opening
-the Lance container; its footer remains authoritative. Changes to an existing
+`IndexFile` includes an optional `file_metadata_size_bytes` hint. A reader can
+use it to fetch the footer and variable-size file metadata in one read. The
+footer supplies the authoritative offsets. Changes to an existing
 segment preserve its clustering ID and arbitrary metadata, including unknown
 keys. A newly built segment carries only the metadata its creator assigns.
 
@@ -88,6 +89,11 @@ Two key invariants:
    compaction can leave historical fragment IDs in metadata; the fragment
    reuse index (FRI) translates them before the planner decides coverage.
    Current fragments outside the effective union must be flat-scanned.
+
+The protobuf also reserves `local_fragment_aliases` for segments that store
+fragment IDs assigned before commit. The specified order is local alias
+resolution followed by FRI translation. At this revision the writer emits
+an empty map and the reader rejects a nonempty one. [Index metadata decoder](../../rust/lance-table/src/format/index.rs)
 
 A definition-only index is the exception to the trained-payload layout: it
 stores the requested configuration without index files or indexed coverage.
@@ -242,6 +248,9 @@ codes):
 
 For `IVF_HNSW_PQ` step 3(c) is replaced by an HNSW graph walk where each
 distance computation inside the graph uses the same PQ lookup table.
+For `IVF_HNSW_RQ`, `rq_graph_scoring` selects full-code scoring at each
+visited node (the default) or a sign-bit walk followed by a full-code rerank.
+The ANN execution protobuf carries the choice to a worker. [Query definition](../../protos/ann.proto)
 
 ### Fixed and automatic probing
 
@@ -279,6 +288,12 @@ Python accepts it in the `nearest` dictionary or `ScannerBuilder.nearest`;
 Rust exposes `Scanner::search_effort`. Explicit effort overrides `nprobes`,
 including an explicit 0.5. Omitting effort preserves an explicit `nprobes`.
 It does not change `ef`, `approx_mode`, or refinement.
+
+The probe count and the number of partitions searched concurrently are separate
+controls. An explicit `target_partitions` caps IVF search concurrency. A
+Lance-created session with the target unset can use a `LANCE_CPU_THREADS`
+value above the detected core count to overlap partition reads. An external
+DataFusion session uses its configured target. [IVF search execution](../../rust/lance/src/io/exec/knn.rs)
 
 ### Batch queries
 
@@ -483,6 +498,11 @@ Rust retains `with_row_addr_prefilter` as a deprecated alias with those same
 `with_fragment_slices` APIs select physical `_rowaddr` values for scans;
 their physical selection path rejects ANN and FTS at this baseline.
 
+Internally, scalar index masks carry a `MaskDomain`. A filter combining
+stable-ID and address-domain results resolves the IDs to physical addresses.
+Filtered scans consume those addresses directly. The ANN prefilter converts
+to the row domain expected by vector search. [Mask domains](../../rust/lance-select/src/result.rs)
+
 ---
 
 ## 8. Caching
@@ -520,6 +540,11 @@ Properties:
   cross-segment collisions. Native RaBitQ raw payloads use a physical cache
   identity independent of FRI; translated row views remain tied to the current
   remapping plan, so compaction can reuse codes without reusing stale addresses.
+- Portable IVF state also survives a change of remapper. Its key identifies
+  the dataset, index UUID, object-store prefix and physical index path.
+  Opening the segment binds that state to the current store and remapper.
+  For PQ it retains the prepared quantizer in memory, so repeated opens can
+  reuse its codebook tables.
 - `IVFIndex::load_partition` lazily inserts the requested partition's
   sub-index and storage into the segment cache.
 - `Dataset::prewarm_index(name)` opens **all** same-name segments and loads all
@@ -618,10 +643,12 @@ incomplete result sets are rejected. The implementation lives in
   counts do so by default, but Rust's `with_partition_rebalancing()` enables
   split/join within that selected suffix. It rejects a zero merge count and
   cannot be combined with distributed task/segment row bounds.
-- Compaction of data fragments requires index remapping. The
-  *fragment reuse index* (optional auxiliary index) accelerates this by
-  tracking where each old row ended up after compaction. It also supports
-  stable-row-ID tables; address-domain indices may still need eager remapping.
+- A compaction **rewrite** can move rows. The fragment reuse index (FRI)
+  tracks the new addresses when remapping is deferred. For IVF_HNSW
+  partitions, load and prewarm realign graph positions if FRI drops deleted
+  rows. If the entry point can no longer reach every surviving node, Lance
+  repairs the graph. A **column repack** preserves row positions and existing
+  index coverage. [IVF partition loader](../../rust/lance/src/index/vector/ivf/v2.rs) · [Compaction planning](../../rust/lance/src/dataset/optimize/planning.rs)
 - Rust exposes `plan_optimize_indices`, task execution, merge execution, and
   `commit_optimize_indices` in `rust/lance/src/index/optimize.rs`. Bounded
   builds retain one reference model; retraining may train that model during
@@ -702,7 +729,7 @@ If latency is high:
 | Sub-index trait | `rust/lance-index/src/vector/v3/subindex.rs` |
 | Unindexed-fragment helpers | `rust/lance/src/index/loading.rs` + scanner callsites |
 
-These are `67faafe65` paths. The upstream crate-architecture proposal (not
+These are `v15.0.0-beta.29` paths. The upstream crate-architecture proposal (not
 implemented) would move scan planning into an operations layer and index
 implementations behind an index API whose query capabilities take the
 prefilter as an explicit argument, instead of the scanner wiring in §7. Public

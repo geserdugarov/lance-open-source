@@ -2,7 +2,7 @@
 
 Status: **proposal**, 2026-11-13. No NPU performance or correctness result is claimed.
 
-The Lance reference is `67faafe65` (2026-11-16), with the unchanged external
+The Lance reference is `ded121cd9a99dc83040cf41049dc2bd3963241b9` (2026-11-24), with the unchanged external
 runtime pins in [07](07-ecosystem-evidence.md). Core CPU dispatch and search
 algorithms evolve independently of device support; use this exact reference
 when comparing kernels and end-to-end query behavior. Reconciled on 2026-11-24
@@ -66,7 +66,7 @@ Use TorchNPU in an external prototype to learn operation requirements. Do not me
 
 After two working implementations establish the contract, propose the smallest useful batch-compute interface near the numerical owner. Keep Python responsible for external runtime adaptation, while Rust validates persisted model parameters, shapes and index invariants. A native AscendCL/CANN implementation can follow if profiling shows the Python boundary is material. Gate vendor dependencies behind optional features/packages; default CPU-only builds and installations must remain usable without the vendor SDK.
 
-Upstream now proposes the likely home for that interface. In the crate-architecture proposal, the vector index crate receives a `KernelSet` of function pointers at batch granularity, chosen once at load time and wired in by the composition root, so that downstream projects can plug in faster kernels without forking. Kernels and index types loaded at runtime through a C interface are named as separate, later work. None of this exists at `67faafe65`: kernel selection today is SIMD dispatch inside `lance-linalg` ([02 §8](02-vector-indices.md#8-distance-metrics-and-simd)), and no hook for supplying an external kernel was identified.
+Upstream now proposes the likely home for that interface. In the crate-architecture proposal, the vector index crate receives a `KernelSet` of function pointers at batch granularity, chosen once at load time and wired in by the composition root, so that downstream projects can plug in faster kernels without forking. Kernels and index types loaded at runtime through a C interface are named as separate, later work. None of this exists at `v15.0.0-beta.29`: kernel selection today is SIMD dispatch inside `lance-linalg` ([02 §8](02-vector-indices.md#8-distance-metrics-and-simd)), and no hook for supplying an external kernel was identified.
 
 Consequences for this plan:
 
@@ -87,7 +87,15 @@ These names are proposed configuration, not existing Lance parameters. Invalid d
 
 For every operation specify the vector dimension, data type, metric, normalization, accumulation/output precision, treatment of zero vectors, nulls and NaNs, deterministic seed policy and allowed numerical tolerance. Unsupported inputs must produce a clear rejection or the same documented filtering behavior as the selected CPU operation.
 
-For IVF-PQ, residual creation must match the metric and the chosen IVF model. Digest the full parameter/model contract, not just a filename or device type. All workers that will physically merge outputs need compatible model state. Preserve canonical Lance model/index serialization; do not persist opaque NPU runtime handles or vendor-only compiled graph blobs as required dataset state. A vendor cache can remain disposable and external.
+Match the CPU and Torch IVF-PQ encoding rules. L2 and cosine use IVF residuals,
+while Dot trains and encodes raw vectors. In each case PQ assigns sub-vectors
+to the nearest L2 codeword. Compare unrefined Dot recall against the CPU path
+to catch a backend that accidentally subtracts the centroid. [Torch builder](../../python/python/lance/vector.py) · [Recall tests](../../python/python/tests/test_vector_index.py)
+
+Digest the full parameter and model contract. Workers that will physically
+merge outputs need compatible model state. Persist models in the canonical
+Lance format so a CPU reader can reopen the index. Keep vendor runtime handles
+and compiled device graphs in a disposable backend cache.
 
 Bitwise equality is not required for every floating-point operation; bounded distance error, consistent ordering where stable, and measured recall are. Training must pass convergence/quality tests and the same data visibility rules. Reopening the resulting index with a CPU-only reader is a mandatory experiment for the initial canonical-format backend.
 
