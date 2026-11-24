@@ -5,7 +5,10 @@ Status: **proposal**, 2026-11-13. No NPU performance or correctness result is cl
 The Lance reference is `67faafe65` (2026-11-16), with the unchanged external
 runtime pins in [07](07-ecosystem-evidence.md). Core CPU dispatch and search
 algorithms evolve independently of device support; use this exact reference
-when comparing kernels and end-to-end query behavior.
+when comparing kernels and end-to-end query behavior. Reconciled on 2026-11-24
+with the upstream crate-architecture proposal
+([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)), whose
+`KernelSet` seam is proposed, not implemented.
 
 ## Evidence and scope
 
@@ -62,6 +65,15 @@ Overlap can change the critical path; report both stage totals and measured wall
 Use TorchNPU in an external prototype to learn operation requirements. Do not merely accept `accelerator="npu"` in a string validator: memory estimation, synchronization, random generators, precision flags, tensor operations and error paths must all be exercised. CUDA-specific settings are not portable defaults.
 
 After two working implementations establish the contract, propose the smallest useful batch-compute interface near the numerical owner. Keep Python responsible for external runtime adaptation, while Rust validates persisted model parameters, shapes and index invariants. A native AscendCL/CANN implementation can follow if profiling shows the Python boundary is material. Gate vendor dependencies behind optional features/packages; default CPU-only builds and installations must remain usable without the vendor SDK.
+
+Upstream now proposes the likely home for that interface. In the crate-architecture proposal, the vector index crate receives a `KernelSet` of function pointers at batch granularity, chosen once at load time and wired in by the composition root, so that downstream projects can plug in faster kernels without forking. Kernels and index types loaded at runtime through a C interface are named as separate, later work. None of this exists at `67faafe65`: kernel selection today is SIMD dispatch inside `lance-linalg` ([02 §8](02-vector-indices.md#8-distance-metrics-and-simd)), and no hook for supplying an external kernel was identified.
+
+Consequences for this plan:
+
+- Propose the batch-compute interface inside the upstream index API and plugin project, as requirements on `KernelSet`, not as an independent trait.
+- A load-time function-pointer set suits native kernels that are called synchronously per batch, such as a later AscendCL/CANN implementation. Ask that project whether it can also express host/device staging, memory budgets, asynchronous completion and a capability description. The TorchNPU prototype stays outside it, in Python training helpers whose `pylance` surface the refactor leaves unchanged.
+- Replace kernels, not index types. A backend registered as its own index type would be identified by its own type URL, and a reader without that plugin would fail or fall back to an unindexed scan. A kernel replacement keeps the canonical index type and files, which the CPU-reopen requirement below depends on.
+- The numerical contract below is the conformance suite for any replacement set, run against the CPU reference.
 
 The conceptual selection policy is a single mode:
 

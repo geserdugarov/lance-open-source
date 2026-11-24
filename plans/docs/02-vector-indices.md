@@ -512,6 +512,13 @@ allocations. These are Rust linalg API changes;
 callers should follow the current signatures rather than porting an older
 iterator-based implementation verbatim.
 
+This selection happens inside `lance-linalg`; no hook for supplying an external
+kernel was identified at this baseline. An upstream proposal dated 2026-11-16
+(not implemented) would hand the vector index a `KernelSet` of function
+pointers chosen once at load time, so kernels could be replaced without
+forking. See [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)
+and, for accelerator backends, [10](10-npu-acceleration.md#start-with-an-optional-backend).
+
 **Selected optimized kernels:**
 
 - `perf: speed up RaBitQ 4-bit LUT distance on ARM by 16x` (`0108b96c`)
@@ -654,6 +661,12 @@ types and refinement factors. See
 | `IvfSubIndex` trait | `rust/lance-index/src/vector/v3/subindex.rs` |
 | Distance enum + kernels | `rust/lance-linalg/src/distance.rs` (+ `distance/*.rs`) |
 | SIMD | `rust/lance-linalg/src/simd.rs` (+ `simd/*.rs`) |
+
+These are `67faafe65` paths. The upstream crate-architecture proposal would
+move index implementations into per-family crates behind an index API crate
+grown from `lance-index-core`, with `lance` re-exporting the public items.
+Re-check locations after any such move
+([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)).
 
 ---
 

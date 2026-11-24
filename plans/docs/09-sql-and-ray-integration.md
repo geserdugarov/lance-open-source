@@ -4,6 +4,9 @@ Status: proposed implementation path, informed by existing public integrations. 
 
 Lance API references are checked against `67faafe65` (2026-11-16). External
 connector claims retain the exact revisions in [07](07-ecosystem-evidence.md).
+Reconciled on 2026-11-24 with the upstream crate-architecture proposal
+([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)), which
+is not implemented at this baseline.
 
 ## Reuse the available integrations
 
@@ -51,9 +54,13 @@ Start with a deliberately bounded mapping: signed integers, booleans, strings, f
 
 Projection must include columns needed by residual predicates even when the SELECT list does not include them. Push down only expressions whose null, cast, comparison, timezone and collation semantics match. Initially leave volatile functions, unsupported collations and complex expressions in the SQL executor. SQL LIMIT pushdown is safe only after accounting for residual filtering and ordering; ANN top-k has its own explicit contract.
 
+Upstream has not yet chosen the engine-neutral predicate vocabulary that its index API and operations layer will share. Keep the supported subset in an adapter-local form that maps one-to-one onto Lance filters, so the target can change from DataFusion expressions to Lance-owned predicates without revisiting semantics. The proposed per-index `Option<Cost>` would be a natural input to FDW cost estimates, but it does not exist; S2 costing starts from fragment and index statistics.
+
 ### Execution boundary choices
 
 An in-process adapter avoids RPC but must reconcile PostgreSQL memory contexts, errors, interrupts and process lifecycle with Rust async tasks and Arrow lifetimes. A sidecar separates dependency upgrades and failures but adds serialization, authentication, deployment and cancellation propagation. Measure both if either is plausible; do not export Rust trait objects as a stable C ABI. For a same-process Arrow boundary, use explicit release callbacks. PostgreSQL tuple conversion may still allocate/copy.
+
+The upstream proposal takes the same position on ABI: its new traits stay Rust traits, and seams are only shaped so a C interface could be added later (Arrow arrays and streams, serializable options, coarse calls). It also expects connectors to be able to depend on a core table and index API without DataFusion or the scanner, which would shrink an in-process adapter's dependency closure. Whether connectors should depend on those crates directly is a deferred upstream decision. Record the `lance` dependency closure in the S0 matrix, and keep the adapter on the public `lance` API until that is settled.
 
 A table access method is a much larger commitment than an FDW: it needs a plan for tuple identity, indices, vacuum, WAL/recovery, locks and SQL transaction behavior. Defer it until the read-only route demonstrates a concrete limitation that warrants that work.
 
@@ -82,6 +89,16 @@ is stronger than ordinary optimization. Rust's separate UUID-selected
 consolidation can retrain and is not exposed by the Python/Java converters at
 this baseline. See [05 §9](05-distributed-vector-index-creation.md#9-incremental-creation-and-distributed-optimization).
 
+Fragment-level primitives with driver-side commits are the shape the upstream
+proposal generalizes into a core table plus serializable tasks. Two points
+from that work affect task ownership here. Resolve rows to fragments at the
+pinned snapshot, never from row-ID bit layout, which breaks under stable row
+IDs; `LanceDataset.get_row_addresses` does this at the current baseline but is
+a development API newer than `v14.0.3` and than Lance-Ray's declared `pylance`
+floor. And #8973 sketches a shard-level work unit that need not equal one
+fragment, so treat fragment-ID task ownership as the current contract, not a
+permanent one.
+
 ### Distributed search correctness
 
 The equivalence target is **the same result as single-node Lance at that
@@ -99,6 +116,13 @@ has a segment owner. Core must expose or execute this selection; the adapter
 must not reconstruct overlay/FRI semantics. Until that boundary exists, route
 affected queries through the complete core scanner. Arbitrary fragment sharding
 must not repeatedly search a segment that spans several fragments.
+
+The upstream task layer, with index-segment scans and partial index searches
+as serializable tasks, is the proposed home for that boundary, and the
+proposal keeps coverage and fallback logic in Lance. Its ownership list names
+unindexed-fragment fallback but not stale rows inside covered fragments. Raise
+that case, with the E1 regression, on the task-layer project so the task
+definition covers it.
 
 The inspected Lance-Ray release and main force `fast_search=True` for segment
 tasks and plan fallback per fragment. Core then masks stale overlay rows out
@@ -131,7 +155,7 @@ fixed-probe shared search; follow the core planner's checks.
 
 Use bounded candidate aggregation: with `W` workers, local candidate limit `K'`, and candidate row width `B`, result payload is approximately `W * K' * B`, before framing and buffers. The current public Lance-Ray returns a materialized top-k table; keep wide payload columns out of candidate exchange and fetch them after selection where supported. Do not imply it is a general streaming distributed SQL engine.
 
-FTS needs a separate ranking design: combining local BM25 scores without consistent corpus statistics can change ranking. Hybrid search, global aggregation and distributed joins are distinct capabilities, not consequences of vector fanout.
+FTS needs a separate ranking design: combining local BM25 scores without consistent corpus statistics can change ranking. The proposed `as_ranked()` capability covers BM25 as well as ANN, but a per-segment ranked stream does not by itself supply those statistics. Hybrid search, global aggregation and distributed joins are distinct capabilities, not consequences of vector fanout.
 
 ### Budgets and operational behavior
 

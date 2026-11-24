@@ -134,6 +134,8 @@ The following is an **illustrative design record**, not a supported Lance wire f
 }
 ~~~
 
+Upstream proposes serializable scan, search and write tasks as part of an engine-neutral task layer ([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)). When such a task exists it belongs in `native_plan`, exactly like today's optimization and compaction plans. The envelope keeps supplying what that proposal leaves to the caller: table incarnation, attempt identity, capability admission, budgets and fencing. `producer_revision` stays mandatory, since the crate that defines a task type may change during the refactor.
+
 A production schema must define field types, digest algorithms/canonicalization, bounds, required/optional fields, unknown-feature handling, and validation errors. Object locations are immutable/content-verified; access uses separately provisioned scoped credentials. Table identity and incarnation must come from the selected catalog/authority, not a locally invented label. A coordinator epoch is effective only when both record mutation and publication enforce fencing.
 
 For an optimization job, retain the native planning options alongside its plan

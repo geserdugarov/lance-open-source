@@ -702,6 +702,13 @@ If latency is high:
 | Sub-index trait | `rust/lance-index/src/vector/v3/subindex.rs` |
 | Unindexed-fragment helpers | `rust/lance/src/index/loading.rs` + scanner callsites |
 
+These are `67faafe65` paths. The upstream crate-architecture proposal (not
+implemented) would move scan planning into an operations layer and index
+implementations behind an index API whose query capabilities take the
+prefilter as an explicit argument, instead of the scanner wiring in §7. Public
+`lance` items are to stay through re-exports; re-check file locations after
+any such move ([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)).
+
 ---
 
 This concludes the storage-and-search core of the fourteen-document set

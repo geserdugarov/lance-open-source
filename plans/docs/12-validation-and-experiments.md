@@ -4,7 +4,10 @@ Status: **proposed gates**, 2026-11-13. No measurements in this document are res
 
 Use `67faafe65` (2026-11-16, `15.0.0-beta.22`) for the development reference;
 `v14.0.3` is the latest local stable tag. Keep external connector pins separate
-and do not treat this source refresh as a completed integration run.
+and do not treat this source refresh as a completed integration run. E9 and
+the refactor-invariance row were added on 2026-11-24 for the upstream
+crate-architecture proposal
+([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)).
 
 ## First collect a reproducible baseline
 
@@ -24,6 +27,7 @@ Choose three workloads: ingestion plus index maintenance; SQL filtered scan/join
 | E6 | NPU assignment/training/rerank against CPU | Stage and wall-clock time, transfers, memory, distance error, recall, CPU reopening | Select only kernels with useful end-to-end benefit and matching semantics |
 | E7 | Mixed-version admission and stable upgrade rehearsal | Rejected unsupported plans; stable historical fixture results; adapter changes and engineer time | Qualify the release combination and quantify maintenance savings |
 | E8 | Storage/metadata adapter conformance | Concurrent publishers, conditional operations, ambiguous outcomes, credential refresh and GC behavior | Admit a provider/manifest implementation only for the guarantees it passes |
+| E9 | Rebuild the pinned adapters across an upstream crate-refactor step | Unchanged adapter source against the public `lance` / `pylance` API; identical query results; plans serialized before the step still admitted or explicitly rejected after it; dependency closure (`cargo tree`) and build, clippy and test timings before and after | Advance the development pin only when the re-exports hold; consider a direct sub-crate dependency only after upstream decides on it |
 
 Report distributed efficiency as `throughput(W) / (W * throughput(1))` at the same input size and correctness criteria. Include both strong scaling (fixed total input) and weak scaling (fixed input per worker) when useful. Do not mix them into one speedup claim.
 
@@ -44,6 +48,7 @@ Report distributed efficiency as `throughput(W) / (W * throughput(1))` at the sa
 | Resource bounds | Large uncovered-fragment fallback, skewed partitions, bounded in-flight batches, driver candidate/metadata growth, spill and cancellation |
 | Devices | CPU-only installation, missing accelerator, unsupported operation, OOM, failure during async copy, precision drift, deterministic seed where supported |
 | Protocol | Unknown required capability, stale coordinator epoch, wrong plan/model/schema digest, truncated descriptor and mismatched worker version |
+| Refactor invariance | Same visibility, coverage, fallback and scoring results before and after an upstream crate move; public paths still resolve through re-exports; no persisted-format change |
 
 Transaction V2 checks at this baseline assert rejection of `CompositeOperation`,
 not successful execution. Wire transport tests must retain explicit empty
@@ -76,12 +81,14 @@ Exactly-once **visibility** is an objective of the selected publication/recovery
 - **NPU value:** initial promotion target of at least `1.5x` end-to-end improvement for one selected operation/workload at equal quality, including conversion/transfer; otherwise keep it experimental or stop that kernel effort. This is a proposed decision threshold, not a predicted gain.
 - **CPU regression:** initial threshold no more than 5% repeatable p95/throughput regression in relevant CPU baselines from introducing optional backends. Evaluate variance/confidence before failing a change.
 - **Memory:** configure and publish a per-process/host/device budget; no OOM at the qualified concurrency, and memory must plateau for fixed batch size rather than grow with all scanned rows. Include driver metadata/candidate accumulation.
-- **Upgrade:** complete a documented stable-release upgrade rehearsal with matching adapter behavior. Quantify changed adapter files and engineering time against the initial baseline; set an effort target after measuring that baseline.
+- **Upgrade:** complete a documented stable-release upgrade rehearsal with matching adapter behavior. Quantify changed adapter files and engineering time against the initial baseline; set an effort target after measuring that baseline. Once the upstream crate refactor starts landing, include one upgrade that crosses a refactor step (E9).
 - **Recovery:** all scripted failure cases converge to a known terminal state within the product's agreed recovery objective. Set a numeric SLO from the deployment requirements in phase 0; no fabricated availability claim.
 
 ## Existing tests and commands to extend
 
 Relevant existing locations include [index tests](../../rust/lance/src/index/tests/), [optimization implementation/tests](../../rust/lance/src/index/optimize.rs), [concurrent compaction/reindex tests](../../rust/lance/src/dataset/optimize/tests/concurrent_reindex.rs), [external manifest tests](../../rust/lance-table/src/io/commit/external_manifest.rs), [Python commit-index tests](../../python/python/tests/test_commit_index.py), [vector-index tests](../../python/python/tests/test_vector_index.py), and [fragment tests](../../python/python/tests/test_fragment.py). For example, the concurrent reindex suite already exercises commits past compaction and cleaned-up source versions; extend it instead of reproducing those invariants in a Ray-only test.
+
+These are baseline locations. The upstream crate refactor would move some of them and proposes per-interface contract tests, including one suite every index plugin must pass (train, remap, search with prefilter), run against each implementation and a fake. When those suites exist, put adapter and backend conformance cases into them instead of maintaining a parallel harness.
 
 Before running implementation checks, follow [rust/AGENTS.md](../../rust/AGENTS.md), [python/AGENTS.md](../../python/AGENTS.md) or [java/AGENTS.md](../../java/AGENTS.md). Required Rust gates include `cargo fmt --all`, `cargo clippy --all --tests --benches -- -D warnings`, and appropriate targeted tests/checks. Python lint uses the documented environment and `uv run make lint` from `python/`. Benchmarks use the repository's `release-with-debug` profile; `release-no-lto` is restricted to the uses documented by the root guide.
 

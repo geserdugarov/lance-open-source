@@ -4,7 +4,9 @@ Status: **proposed technical contribution workflow**, 2026-11-13. It does not re
 
 The implementation audit is refreshed to `67faafe65` (2026-11-16); the latest
 stable tag in this checkout is `v14.0.3`. Connector observations remain pinned
-as recorded in [07](07-ecosystem-evidence.md).
+as recorded in [07](07-ecosystem-evidence.md). Reconciled on 2026-11-24 with
+the upstream crate-architecture proposal
+([07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)).
 
 ## Shared value
 
@@ -18,7 +20,8 @@ execution contracts across consumers.
 | --- | --- | --- |
 | Provenance and publication validation | Reliable builders across schedulers | Lance lifecycle / table owners |
 | Bounded scan/search and conformance | Predictable memory and consistent adapter behavior | Scanner and adapter maintainers |
-| Current-format extension boundary | Index/backend experiments without format forks | Core API and external implementations |
+| Current-format extension boundary | Index/backend experiments without format forks | Core API and external implementations; the upstream index API and plugin project is the venue |
+| Requirements and tests for the crate refactor | Task, index API and kernel seams that fit more than one consumer | The three upstream refactor projects |
 | Optional compute operations | Hardware choice without mandatory vendor dependencies | Numerical owner and optional backend |
 | Version/capability admission | Clear upgrade failures and testable adaptation | Common contract and each adapter |
 | Benchmarks and failure fixtures | Reproducible correctness and performance evidence | Public test suites |
@@ -35,6 +38,36 @@ compatibility adapter. Keep a public mock or reference implementation so CI can
 exercise the contract without a particular deployment or device. Maintainers
 may prefer a narrower interface change or an existing API.
 
+## Upstream refactor in flight
+
+The crate-architecture proposal would move code out of `lance` and
+`lance-index` in a series of small PRs while keeping the public `lance` and
+`pylance` APIs through re-exports. It is a proposal; the points below apply
+from the first PR that implements it.
+
+- **Public API users are insulated; path-level consumers are not.** Adapters
+  built on `lance` / `pylance` should need no source change. Anything that
+  depends on internal module paths, private items or file locations will churn
+  with each move: local patches, long-lived branches, and the source maps in
+  chapters 02, 03 and 05.
+- **Carry as little as possible in the modules being moved:**
+  `rust/lance/src/dataset` (scanner, write paths, MemWAL),
+  `rust/lance/src/index` and `rust/lance-index`. Upstream a needed change
+  before the corresponding move lands, or design it against the new boundary.
+  A patch that must be re-applied across a file move is a recurring cost.
+- **Do not depend on new sub-crates yet.** Whether connectors should use the
+  core table and index API crates directly, which re-exports stay long term,
+  and whether DataFusion becomes optional are all deferred upstream decisions.
+  Treat a new crate as internal until a stable release documents it.
+- **Contribute requirements where the seams are being drawn:** the index API
+  project for vector-index and kernel extension; the core table and task
+  project for scan/search tasks, the predicate vocabulary and fallback
+  ownership; WAL extraction for MemWAL users. Each is to have a tracking
+  issue; none was linked when the proposal was read.
+- **Expect no format change from it.** The proposal reorganizes crates and
+  describes no file or table format change. Verify that per PR instead of
+  assuming it.
+
 ## Upgrade contracts are different
 
 | Contract | Promise / policy |
@@ -43,7 +76,8 @@ may prefer a narrower interface change or an existing API.
 | Legacy formats / writers | Preserve existing read behavior; exclude them from new feature design; isolate unavoidable shared-boundary changes and test with released historical fixtures |
 | Unstable file formats | May change freely; do not add compatibility fallbacks/migrations/tests for previous unstable revisions |
 | Public APIs | Preserve signatures; deprecate and add replacements when needed; parameter names stay consistent across bindings |
-| Rust plugin implementation surface | Current scalar interface is explicitly unstable and same-version; plan source adaptation and rebuilds per supported release |
+| Rust plugin implementation surface | Current scalar interface is explicitly unstable and same-version; plan source adaptation and rebuilds per supported release. The proposed index API traits would replace it and stay same-version Rust interfaces; a C-ABI runtime plugin interface is separate, later work |
+| Crate layout and internal module paths | No stability promise. The proposed refactor moves implementations between crates while preserving `lance` / `pylance` public APIs through re-exports; direct sub-crate dependencies are unsupported until upstream decides |
 | New external execution protocol | Initially experimental; stabilize only after multiple consumers and tests; required capabilities must fail clearly on unsupported workers |
 | Native ABI / RPC | A separate commitment if introduced; document ownership, versions, errors and supported types explicitly |
 
@@ -69,7 +103,7 @@ Rolling operation protocol upgrades require explicit capability negotiation; ini
 
 ## Proposed maintainership workflow
 
-Before implementation, refresh the [watchlist](07-ecosystem-evidence.md#current-collaboration-watchlist), search overlapping PRs, reproduce the actual gap, and discuss a bounded design with the relevant maintainers.
+Before implementation, refresh the [watchlist](07-ecosystem-evidence.md#current-collaboration-watchlist), search overlapping PRs, reproduce the actual gap, and discuss a bounded design with the relevant maintainers. If the change touches a seam owned by one of the three refactor projects, take it to that project's tracking issue first.
 
 For each feature:
 
@@ -87,4 +121,7 @@ Record adapter rebuild/adaptation time, manual upgrade steps and compatibility
 failures before implementation. A new optional backend or SQL-engine variant
 should change its adapter and conformance cases; shared core changes need a
 demonstrated capability gap. Use a trial upgrade and the conformance matrix to
-assess whether the boundary reduces recurring semantic rewrites.
+assess whether the boundary reduces recurring semantic rewrites. While the
+refactor is in flight, also record the conflicts met when rebasing local
+changes across moved modules, and whether the adapter's dependency closure
+still includes DataFusion.

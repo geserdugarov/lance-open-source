@@ -431,6 +431,15 @@ at `67faafe65`; they are not promises about the eventual v15 stable release:
   maps the owners and their tests; older facade-file references may no longer
   locate the implementation.
 
+**Proposed, not part of any release line.** A maintainer proposal dated
+2026-11-16 would go further and split crates: an index API crate grown from
+`lance-index-core` (introduced in v9), plugin index crates, a DataFusion-free
+core table, an operations layer, a WAL crate and an engine-neutral task layer.
+It keeps the public `lance` / `pylance` APIs through re-exports, assigns no
+version, and defers any decision on the DataFusion dependency. It is not an
+anchoring consideration until a stable release ships part of it; see
+[07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal).
+
 The automatic compatibility matrix uses **stable releases only**, including
 each case's `min_version`. Keep tests of v15 development behavior in ordinary
 unit/integration suites until a stable release defines that contract; do not

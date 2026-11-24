@@ -4,6 +4,9 @@ Status: **proposal**, 2026-11-13. Existing seams are identified in [06](06-distr
 
 Implementation references use `67faafe65` (2026-11-16); external ecosystem
 evidence retains the pins and observation dates in [07](07-ecosystem-evidence.md).
+Reconciled on **2026-11-24** with the upstream crate-architecture proposal
+summarized in [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal);
+that proposal is equally unimplemented at this baseline.
 
 ## Design objective
 
@@ -40,6 +43,31 @@ External implementation packages
 ~~~
 
 This is a target ownership map, not a request to create all these packages immediately. Start with existing crates and repositories. Create a new crate only when it removes a demonstrated dependency or gives an independently maintained implementation a useful home.
+
+Inside Lance core, crate boundaries are now an upstream topic. The crate-architecture proposal plans an index API crate, per-index plugin crates, a DataFusion-free core table, an operations layer, a WAL crate and a task layer. Follow those projects instead of splitting crates in an adapter or a fork. The rule above continues to govern connector and backend repositories.
+
+## Alignment with the upstream crate refactor
+
+The upstream proposal and this plan share the central rule: Lance keeps the logic that makes reads and writes correct, and decoupling changes who schedules and runs it. The proposal reorganizes the crates below the shared operation boundary. It does not define job identity, attempt selection, recovery, capability admission or device contracts, which remain this plan's subject.
+
+| This plan | Upstream move | Consequence |
+| --- | --- | --- |
+| Contract 2: plan, execute, validate, publish | 3 and 5: operations as task objects over a DataFusion-free core table, with `CompactionTask` rebuilt on it first | Keep carrying native plans as opaque payloads. Their owning crate and the worker's dependency closure may change; public `lance` paths stay through re-exports |
+| Contract 3: scan/search request | 5: serializable fragment and index-segment scans and partial index searches. 1: `as_filter` / `as_ranked` with an explicit prefilter | Do not define a competing task format. The request becomes the envelope around an upstream task once one exists; until then it is an adapter-level type |
+| Contract 3: predicate representation | 1 and 3 jointly: an engine-neutral predicate vocabulary, not yet chosen | Keep the pushed-down subset small and translate at the adapter edge, so retargeting from DataFusion expressions to Lance-owned predicates is mechanical |
+| Contract 3: fallback ownership | Coverage, unindexed-fragment fallback and deletion visibility stay in Lance | Supply the stale-overlay-row case, which the proposal's list omits, as a requirement and regression test for partial index search tasks |
+| Contract 4: compute backend | 2: a `KernelSet` chosen once at load time | Propose kernel replacement through that seam instead of a separate trait, and check that it can express device transfer and asynchronous completion; see [10](10-npu-acceleration.md#start-with-an-optional-backend) |
+| Index extension decision | 1 and 2: index API crate and a registry keyed by index type | Supersedes an additive seam built on `VectorIndexExtension` |
+| Contract 5: storage, metadata, cache | Not addressed; `lance-io` is a stable leaf used directly | Unchanged |
+| MemWAL reuse | 4: a WAL crate | Depend on the documented writer-epoch and durability semantics, not on module paths |
+| ABI and transport notes | Runtime plugins as later work, with seams kept C-ABI-ready | Consistent: Rust traits are not a stable ABI, and Arrow C Data/Stream remains the in-process candidate |
+
+Two points differ in emphasis, not direction:
+
+- This plan asked for a concrete adapter requirement before extracting DataFusion types from interfaces. Upstream justifies the same extraction by build time and testability, so an adapter no longer has to make that case. It only has to supply its requirements.
+- Upstream adds an internal seam when an implementation will be swapped, a module will be used alone, or churn should be isolated. This plan asks for two working implementations before *stabilizing* a public contract. The proposal draws the same line: a stable plugin interface can only follow a clean internal one, and the new traits remain same-version Rust interfaces.
+
+The refactor is to land as many small PRs across `rust/lance/src/dataset`, `rust/lance/src/index`, `rust/lance-index` and MemWAL. A change from this plan that touches those modules should land before the corresponding move or be designed against the new boundary. [11](11-upstream-and-upgrade-strategy.md#upstream-refactor-in-flight) covers the upgrade consequences.
 
 ## Authority: avoid two owners of the same truth
 
@@ -109,13 +137,15 @@ every core request merely because it can forward a `nearest` dictionary.
 
 Keep Arrow batches as the internal stream shape. For an in-process ABI boundary, evaluate Arrow C Data/Stream with explicit ownership and cancellation. For interprocess transport, use a versioned message protocol with Arrow IPC; evaluate Flight only if streaming RPC is actually needed. The [Arrow C Data specification](https://arrow.apache.org/docs/format/CDataInterface.html) applies to same-process interchange and is not a network protocol.
 
-A logical scan boundary does not imply a new SQL engine. DataFusion remains an implementation detail where useful. Extracting its component types from existing interfaces is incremental work, justified by a concrete adapter requirement.
+A logical scan boundary does not imply a new SQL engine. DataFusion remains the default executor. Extracting its types from index and task interfaces is now proposed upstream (moves 1 and 5). Until that lands, translate at the adapter edge and do not start a parallel extraction.
 
 ### 4. Compute backend
 
 Begin with batch operations that have clear inputs and outputs: IVF assignment, training primitives, PQ encoding or exact reranking. Specify dtype, metric, normalization, null/NaN policy, shapes, precision, memory budget, cancellation and completion semantics. Kernel implementations must not own manifests, namespace lookups, SQL sessions or Ray actors.
 
 A possible capability description is `operations`, `dtypes`, `metrics`, `max_batch_bytes`, and an implementation revision. This is design notation, not a proposed universal plugin framework. Prefer two working implementations and tests before stabilizing a trait.
+
+Upstream's proposed `KernelSet` is the candidate home for kernel replacement: function pointers at batch granularity, selected once at load time for the vector index crate, with the stated aim of letting downstream projects supply faster kernels without forking. It has no published signature yet. The operation contract in this section is input to that design and the conformance test for any replacement set. Whether a function-pointer set can carry device staging, memory budgets and asynchronous completion is a question to raise with the index API project.
 
 ### 5. Storage, metadata and cache providers
 
@@ -148,13 +178,14 @@ Proposed rules:
 | SQL isolation boundary | Compare in-process Rust adapter with a small scan sidecar during phase 0 | Sidecar wins only if isolation/upgrade gains outweigh transport and operation cost |
 | Distributed execution | Extend Lance-Ray with durable job state and existing plans | Another scheduler consumes the same protocol when a real consumer exists |
 | Device acceleration | Optional Ascend implementation, CPU reference path | Add kernel families after profiling; no mandatory vendor runtime in default Lance |
-| Index extension | Existing scalar registry for statically linked scalar plugins; no external vector extension point exists | `VectorIndexExtension` is in a `pub(crate)` module and uses `V1FileReader`; propose an additive current-format seam only for a concrete consumer |
+| Index extension | Existing scalar registry for statically linked scalar plugins; no external vector extension point exists. Bring vector-index and kernel extension requirements to the upstream index API and plugin project | `VectorIndexExtension` is in a `pub(crate)` module and uses `V1FileReader`; do not build on it. Propose an interim additive seam only if a concrete consumer cannot wait for the index API crate |
+| Crate boundaries in Lance core | Follow the upstream crate-architecture projects; adapters depend on the public `lance` / `pylance` APIs | Depend on a new sub-crate directly only after upstream decides whether connectors should; that decision is deferred |
 | Publication | Existing correct handler and one authoritative publisher | External metadata implementation requires crash/concurrency conformance before use |
 | External implementations | Out-of-tree provider/backend/policy modules | Validate each implementation against the same contract and conformance cases |
 
 ## Review rubric for every future feature
 
-A design review must name: the invariant owner; the existing extension point; new dependencies; the tested fallback/error behavior; the minimal public surface; format effects; supported capability combinations; observable failure outcomes; and how an external implementation will be upgraded. Reject abstractions that merely rename existing calls, vendor conditionals scattered through core algorithms, or binding-only fixes for storage invariants.
+A design review must name: the invariant owner; the existing extension point; the upstream refactor project that owns the touched seam, if any; new dependencies; the tested fallback/error behavior; the minimal public surface; format effects; supported capability combinations; observable failure outcomes; and how an external implementation will be upgraded. Reject abstractions that merely rename existing calls, vendor conditionals scattered through core algorithms, or binding-only fixes for storage invariants.
 
 Measure extensibility through core files touched by an adapter, upgrade effort,
 dependency leakage and the percentage of adapters tested without rebuilding

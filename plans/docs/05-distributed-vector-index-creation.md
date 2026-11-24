@@ -1185,6 +1185,8 @@ cost. Record those separately in an end-to-end environment.
 
 Issue and PR states below were checked through the GitHub API on
 **2026-11-05**, with #7321 and #10797 refreshed on **2026-11-14**.
+Discussion #8973 and the crate-architecture proposal were read on
+**2026-11-24**.
 Landed capabilities were refreshed from local history and source at
 `67faafe65` on **2026-11-16**. External issue states retain the dates above; an open
 proposal is not part of this snapshot's API. Re-check states before using this document
@@ -1214,6 +1216,8 @@ as a release plan.
 | [Issue #6860 — slow ANN with hundreds of distributed deltas](https://github.com/lance-format/lance/issues/6860) | Open | Concrete query-fanout pressure that should guide segment budgets and optimization. |
 | [Epic #7301](https://github.com/lance-format/lance/issues/7301), [vector task #7305](https://github.com/lance-format/lance/issues/7305), [draft PR #7312](https://github.com/lance-format/lance/pull/7312) — build memory pools | Issues open; PR closed, unmerged | Memory accounting/spill work remains incomplete; streaming sample bounds are not a global build budget. |
 | [Issue #7032](https://github.com/lance-format/lance/issues/7032) / [draft PR #7053 — reject unsafe user UUIDs for segmented builds](https://github.com/lance-format/lance/pull/7053) | Issue open / PR closed, unmerged | Directory-collision safeguards still require caller discipline; watch for replacement implementation work. |
+| [Discussion #8973 — what should be in scope for Lance](https://github.com/lance-format/lance/discussions/8973) | Discussion; no decision recorded | Source of the engine-neutral task requirements (serializable, more stable than internal APIs, explicit limited context) that would also apply to build and merge tasks. |
+| [Proposal — refactoring Lance's crate architecture](https://docs.google.com/document/d/1sqkh0bmDxZRbjGkAsb_ephag9JErtAlpcru7RTGOv_E/edit) | Maintainer proposal dated 2026-11-16; per-project tracking issues not yet linked | Would add an index API crate (train, update, remap) and move index lifecycle and task code out of `lance`. Public APIs are to stay through re-exports; the §13 paths would change. Summary in [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal). |
 
 Older question [#5359](https://github.com/lance-format/lance/issues/5359)
 (unified versus separate distributed APIs) remains open. Issue
@@ -1328,7 +1332,10 @@ Also review:
 
 - [open distributed vector-index items](https://github.com/lance-format/lance/issues?q=is%3Aopen+distributed+vector+index);
 - [open index-segment items](https://github.com/lance-format/lance/issues?q=is%3Aopen+%22index+segment%22);
-- Discussion #6189 for design updates that do not appear in issue state.
+- Discussion #6189 for design updates that do not appear in issue state;
+- Discussion #8973 and, once published, the crate-architecture proposal's
+  project tracking issues, for moves that relocate the segment and
+  optimization APIs.
 
 When an open PR lands, update the source baseline first, verify its tests and
 actual APIs in the checked-out code, and only then remove a limitation from
@@ -1366,6 +1373,11 @@ this document.
 | Java native bridge | `java/lance-jni/src/blocking_dataset/index.rs`, `java/lance-jni/src/utils.rs`, `java/lance-jni/src/vector_trainer.rs`, `java/lance-jni/src/rq_model.rs` |
 | User-facing guide | `docs/src/guide/distributed_indexing.md` |
 | On-disk/query background | `docs/src/format/index/index.md`, `plans/docs/03-index-on-disk-and-search.md` |
+
+These are `67faafe65` paths. The upstream crate-architecture proposal would
+relocate index lifecycle and implementation code into new crates while
+re-exporting the public APIs from `lance`; re-check locations after any such
+move.
 
 ---
 

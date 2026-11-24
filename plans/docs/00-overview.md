@@ -108,6 +108,18 @@ configuration is in `dataset/scanner/builder.rs`, vector planning in
 `dataset/scanner/vector.rs`, and index coordination in `index/lifecycle.rs`
 with separate loading, provenance, statistics, and prewarm modules.
 
+**Proposed restructuring (upstream, not implemented).** A maintainer proposal
+dated 2026-11-16 would re-layer these crates: an index API crate grown from
+`lance-index-core`, vector/FTS/scalar indexes as plugin crates behind it, a
+DataFusion-free core table beside a DataFusion-based operations layer, MemWAL
+in its own crate, and an engine-neutral task layer. `lance` would re-export
+the moved code, so public paths stay while the source paths cited throughout
+chapters 01–05 would change. The tree above remains the description of
+`67faafe65`. See [07](07-ecosystem-evidence.md#upstream-crate-architecture-proposal)
+for the summary and target layering, and
+[08](08-extensible-target-architecture.md#alignment-with-the-upstream-crate-refactor)
+for its effect on the integration plan.
+
 File-version selectors and exact persisted identities live in
 `rust/lance-file/src/version.rs`. New datasets resolve `stable` to `2.2`;
 `next` selects unstable `2.3`. Each exact version composes its readers, writers,
